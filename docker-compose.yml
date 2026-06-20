@@ -1,0 +1,27 @@
+services:
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: multiview-server-mediamtx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+
+  multiview-server:
+    container_name: multiview-server
+    build: .
+    working_dir: /app
+    restart: unless-stopped
+    ports:
+      - "${MULTIVIEW_PORT:-8080}:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - TZ=${TZ:-America/Chicago}
+      - MULTIVIEW_PUBLIC_URL=${MULTIVIEW_PUBLIC_URL:-http://localhost:8080}
+      - MULTIVIEW_DATA_DIR=/app/data
+    volumes:
+      - ./src:/app
+      - ./data:/app/data
+      - ./logs:/app/logs

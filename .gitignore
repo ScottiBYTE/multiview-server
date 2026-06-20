@@ -1,0 +1,15 @@
+# Secrets / local runtime data
+.env
+data/cameras.json
+data/hls/
+data/thumbs/
+logs/
+node_modules/
+
+# Backups / generated files
+*.before*
+*.bak
+*.tar.gz
+docker-compose.yml.before*
+src/server.js.before*
+mediamtx/mediamtx.yml.before*

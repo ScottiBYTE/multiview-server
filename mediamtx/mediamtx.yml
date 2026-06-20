@@ -1,0 +1,21 @@
+logLevel: info
+
+api: yes
+apiAddress: 0.0.0.0:9997
+
+rtsp: yes
+rtspAddress: 0.0.0.0:8554
+
+hls: yes
+hlsAddress: 0.0.0.0:8888
+hlsVariant: mpegts
+hlsSegmentCount: 6
+hlsSegmentDuration: 2s
+hlsAlwaysRemux: yes
+
+webrtc: yes
+webrtcAddress: 0.0.0.0:8889
+
+paths:
+  all_others:
+    source: publisher

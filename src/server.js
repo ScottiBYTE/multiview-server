@@ -1,0 +1,1135 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const app = express();
+
+const PORT = process.env.PORT || 8080;
+const PUBLIC_URL = process.env.MULTIVIEW_PUBLIC_URL || `http://localhost:${PORT}`;
+const DATA_DIR = process.env.MULTIVIEW_DATA_DIR || '/app/data';
+const CAMERAS_FILE = path.join(DATA_DIR, 'cameras.json');
+const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
+const HLS_DIR = path.join(DATA_DIR, 'hls');
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use('/thumbs', express.static(THUMBS_DIR));
+app.use('/hls', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+}, express.static(HLS_DIR));
+
+function ensureDataFiles() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(CAMERAS_FILE)) {
+    fs.writeFileSync(CAMERAS_FILE, JSON.stringify([], null, 2));
+  }
+
+  if (!fs.existsSync(THUMBS_DIR)) {
+    fs.mkdirSync(THUMBS_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(HLS_DIR)) {
+    fs.mkdirSync(HLS_DIR, { recursive: true });
+  }
+}
+
+function loadCameras() {
+  ensureDataFiles();
+
+  try {
+    const raw = fs.readFileSync(CAMERAS_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('Failed to load cameras.json:', err);
+    return [];
+  }
+}
+
+function saveCameras(cameras) {
+  ensureDataFiles();
+  fs.writeFileSync(CAMERAS_FILE, JSON.stringify(cameras, null, 2));
+}
+
+function safeId(name) {
+  return String(name || 'camera')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || `camera-${Date.now()}`;
+}
+
+
+
+const liveProcesses = new Map();
+
+function stopOtherLiveStreams(activeCameraId) {
+  for (const [cameraId, entry] of liveProcesses.entries()) {
+    if (cameraId === activeCameraId) continue;
+
+    try {
+      entry.process.kill('SIGTERM');
+    } catch (err) {}
+
+    liveProcesses.delete(cameraId);
+  }
+}
+
+function cleanOtherHlsDirs(activeCameraId) {
+  ensureDataFiles();
+
+  if (!fs.existsSync(HLS_DIR)) return;
+
+  for (const name of fs.readdirSync(HLS_DIR)) {
+    if (name === activeCameraId) continue;
+
+    const fullPath = path.join(HLS_DIR, name);
+    try {
+      fs.rmSync(fullPath, { recursive: true, force: true });
+    } catch (err) {}
+  }
+}
+
+function getLiveStatus(cameraId) {
+  const entry = liveProcesses.get(cameraId);
+  if (!entry) return { running: false };
+
+  if (entry.process.exitCode !== null) {
+    liveProcesses.delete(cameraId);
+    return { running: false };
+  }
+
+  return {
+    running: true,
+    startedAt: entry.startedAt,
+    hlsUrl: `/hls/${cameraId}/index.m3u8`
+  };
+}
+
+function startLiveStream(camera) {
+  ensureDataFiles();
+
+  stopOtherLiveStreams(camera.id);
+  cleanOtherHlsDirs(camera.id);
+
+  const existing = getLiveStatus(camera.id);
+  if (existing.running) {
+    return existing;
+  }
+
+  const cameraHlsDir = path.join(HLS_DIR, camera.id);
+  fs.rmSync(cameraHlsDir, { recursive: true, force: true });
+  fs.mkdirSync(cameraHlsDir, { recursive: true });
+
+  const indexPath = path.join(cameraHlsDir, 'index.m3u8');
+  const sessionId = Date.now().toString(36);
+
+  const liveProfile = camera.liveProfile || 'copy';
+
+  const videoArgs = liveProfile === 'transcode720'
+    ? [
+        '-map', '0:v:0',
+        '-vf', 'scale=-2:720',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-tune', 'zerolatency',
+        '-b:v', '3000k',
+        '-maxrate', '4000k',
+        '-bufsize', '7000k',
+        '-g', '60',
+        '-keyint_min', '60',
+        '-sc_threshold', '0'
+      ]
+    : liveProfile === 'transcode1080'
+      ? [
+          '-map', '0:v:0',
+          '-vf', 'scale=-2:1080',
+          '-c:v', 'libx264',
+          '-preset', 'veryfast',
+          '-tune', 'zerolatency',
+          '-b:v', '5000k',
+          '-maxrate', '7000k',
+          '-bufsize', '10000k',
+          '-g', '60',
+          '-keyint_min', '60',
+          '-sc_threshold', '0'
+        ]
+      : [
+          '-map', '0:v:0',
+          '-c:v', 'copy'
+        ];
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'warning',
+    '-rtsp_transport', 'tcp',
+    '-timeout', '8000000',
+    '-i', camera.rtspUrl,
+    ...videoArgs,
+    '-map', '0:a:0?',
+    '-c:a', 'aac',
+    '-ac', '1',
+    '-ar', '48000',
+    '-b:a', '64k',
+    '-f', 'hls',
+    '-hls_time', '2',
+    '-hls_list_size', '6',
+    '-hls_flags', 'delete_segments+append_list+omit_endlist',
+    '-hls_segment_filename', path.join(cameraHlsDir, `segment_${sessionId}_%05d.ts`),
+    indexPath
+  ];
+
+  const ff = spawn('ffmpeg', args);
+
+  let stderr = '';
+  ff.stderr.on('data', data => {
+    stderr += data.toString();
+    if (stderr.length > 20000) stderr = stderr.slice(-20000);
+  });
+
+  ff.on('close', code => {
+    const entry = liveProcesses.get(camera.id);
+    if (entry && entry.process === ff) {
+      entry.exitedAt = new Date().toISOString();
+      entry.exitCode = code;
+      entry.lastError = stderr;
+      liveProcesses.delete(camera.id);
+    }
+  });
+
+  const entry = {
+    process: ff,
+    startedAt: new Date().toISOString(),
+    hlsUrl: `/hls/${camera.id}/index.m3u8`,
+    lastError: () => stderr
+  };
+
+  liveProcesses.set(camera.id, entry);
+
+  return {
+    running: true,
+    startedAt: entry.startedAt,
+    hlsUrl: entry.hlsUrl
+  };
+}
+
+function stopLiveStream(cameraId) {
+  const entry = liveProcesses.get(cameraId);
+  if (!entry) return false;
+
+  entry.process.kill('SIGTERM');
+  liveProcesses.delete(cameraId);
+  return true;
+}
+
+function getHlsReadiness(cameraId) {
+  const cameraHlsDir = path.join(HLS_DIR, cameraId);
+  const indexPath = path.join(cameraHlsDir, 'index.m3u8');
+  const sessionId = Date.now().toString(36);
+
+  const playlistExists = fs.existsSync(indexPath);
+  let segmentCount = 0;
+  let playlist = '';
+
+  if (fs.existsSync(cameraHlsDir)) {
+    segmentCount = fs.readdirSync(cameraHlsDir).filter(name => name.endsWith('.ts')).length;
+  }
+
+  if (playlistExists) {
+    try {
+      playlist = fs.readFileSync(indexPath, 'utf8');
+    } catch {
+      playlist = '';
+    }
+  }
+
+  return {
+    ready: playlistExists && segmentCount >= 5,
+    playlistExists,
+    segmentCount,
+    hlsUrl: `/hls/${cameraId}/index.m3u8`,
+    playlistUpdatedAt: playlistExists ? fs.statSync(indexPath).mtime.toISOString() : null,
+    playlistPreview: playlist.slice(0, 500)
+  };
+}
+
+function captureThumbnail(camera) {
+  return new Promise((resolve) => {
+    ensureDataFiles();
+
+    const thumbPath = path.join(THUMBS_DIR, `${camera.id}.jpg`);
+    const args = [
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-rtsp_transport', 'tcp',
+      '-timeout', '8000000',
+      '-i', camera.rtspUrl,
+      '-an',
+      '-vf', 'fps=1,scale=640:-2',
+      '-update', '1',
+      '-frames:v', '1',
+      '-ss', '4',
+      '-q:v', '3',
+      '-y',
+      thumbPath
+    ];
+
+    const startedAt = Date.now();
+    const ff = spawn('ffmpeg', args);
+
+    let stderr = '';
+
+    ff.stderr.on('data', data => {
+      stderr += data.toString();
+    });
+
+    const timer = setTimeout(() => {
+      ff.kill('SIGKILL');
+    }, 12000);
+
+    ff.on('close', (code) => {
+      clearTimeout(timer);
+
+      const ok = code === 0 && fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0;
+
+      resolve({
+        ok,
+        code,
+        durationMs: Date.now() - startedAt,
+        thumbnail: ok ? `/thumbs/${camera.id}.jpg?ts=${Date.now()}` : null,
+        error: ok ? null : (stderr || `ffmpeg exited with code ${code}`)
+      });
+    });
+  });
+}
+
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function renderPage(content) {
+  return `
+<!doctype html>
+<html>
+<head>
+  <title>ScottiBYTE MultiView Server</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #0b111c;
+      --panel: #172235;
+      --panel2: #111827;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --good: #16a34a;
+      --bad: #dc2626;
+      --warn: #f59e0b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    header {
+      padding: 24px 32px;
+      background: linear-gradient(90deg, #0f172a, #1e293b);
+      border-bottom: 1px solid var(--border);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 30px;
+    }
+
+    header .subtitle {
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    nav {
+      display: flex;
+      gap: 10px;
+      padding: 14px 32px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+    }
+
+    nav a {
+      color: var(--text);
+      text-decoration: none;
+      background: #1e293b;
+      border: 1px solid var(--border);
+      padding: 9px 13px;
+      border-radius: 10px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+
+    nav a:hover {
+      border-color: var(--accent);
+    }
+
+    main {
+      padding: 32px;
+      max-width: 1400px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 22px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.28);
+    }
+
+    .status {
+      display: inline-block;
+      padding: 8px 12px;
+      background: #14532d;
+      color: #dcfce7;
+      border-radius: 999px;
+      font-weight: bold;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    code {
+      color: #93c5fd;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: #cbd5e1;
+      font-weight: bold;
+      font-size: 14px;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 11px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--text);
+      font-size: 15px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .form-actions {
+      margin-top: 18px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 11px 15px;
+      color: white;
+      background: #2563eb;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button.danger {
+      background: #b91c1c;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 12px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      color: #cbd5e1;
+      background: #0f172a;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: #1e293b;
+      border: 1px solid var(--border);
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .empty {
+      padding: 28px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      color: var(--muted);
+      background: rgba(255,255,255,.02);
+    }
+
+    @media (max-width: 850px) {
+      main {
+        padding: 18px;
+      }
+
+      header {
+        padding: 20px;
+      }
+
+      nav {
+        padding: 12px 18px;
+        flex-wrap: wrap;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ScottiBYTE MultiView Server</h1>
+    <div class="subtitle">Self-hosted camera gateway for lightweight Android TV and remote clients</div>
+  </header>
+
+  <nav>
+    <a href="/">Dashboard</a>
+    <a href="/cameras">Cameras</a>
+    <a href="/matrix">Matrix</a>
+    <a href="/api/health">API Health</a>
+  </nav>
+
+  <main>
+    ${content}
+  </main>
+</body>
+</html>
+  `;
+}
+
+app.get('/', (req, res) => {
+  const cameras = loadCameras();
+
+  res.send(renderPage(`
+    <div class="card">
+      <p><span class="status">Server Online</span></p>
+      <p>This container is the camera gateway for MultiView.</p>
+      <p>Public URL: <code>${PUBLIC_URL}</code></p>
+      <p>Configured cameras: <strong>${cameras.length}</strong></p>
+    </div>
+
+    <div class="card">
+      <h2>System Role</h2>
+      <p>The server handles LAN access to RTSP camera streams, stores camera credentials, performs any necessary conversion, and serves authenticated remote clients through Nginx Proxy Manager.</p>
+      <ul>
+        <li>Local camera access stays server-side</li>
+        <li>Android TV client remains lightweight</li>
+        <li>Camera credentials are not stored on the client</li>
+        <li>Remote access is handled through the server URL</li>
+      </ul>
+    </div>
+  `));
+});
+
+
+app.get('/matrix', (req, res) => {
+  const cameras = loadCameras();
+
+  const cards = cameras.map(camera => {
+    const thumbFile = path.join(THUMBS_DIR, `${camera.id}.jpg`);
+    const thumbHtml = fs.existsSync(thumbFile)
+      ? `<img src="/thumbs/${camera.id}.jpg?ts=${fs.statSync(thumbFile).mtimeMs}" style="width:100%;height:170px;object-fit:cover;border-radius:12px;border:1px solid var(--border);background:#020617;">`
+      : `<div style="height:170px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--border);border-radius:12px;color:var(--muted);background:#0f172a;">No thumbnail</div>`;
+
+    const lastTest = camera.lastTest
+      ? (camera.lastTest.ok ? 'Last test: OK' : 'Last test: Failed')
+      : 'Not tested';
+
+    return `
+      <div class="card" style="padding:14px;margin:0;">
+        ${thumbHtml}
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:12px;">
+          <div>
+            <div style="font-weight:bold;font-size:17px;">${escapeHtml(camera.name)}</div>
+            <div class="muted" style="font-size:13px;">${escapeHtml(camera.group || 'Default')} · ${escapeHtml(camera.liveProfile || 'copy')} · ${escapeHtml(lastTest)}</div>
+          </div>
+          <span class="pill">${escapeHtml(camera.type || 'rtsp')}</span>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <a href="/live/${encodeURIComponent(camera.id)}" style="text-decoration:none;">
+            <button type="button">Live</button>
+          </a>
+          <a href="/cameras/${encodeURIComponent(camera.id)}/edit" style="text-decoration:none;">
+            <button type="button">Edit</button>
+          </a>
+          <form method="post" action="/api/cameras/${camera.id}/test">
+            <button type="submit">Test</button>
+          </form>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>Camera Matrix</h2>
+      <p class="muted">Server-side camera thumbnails from configured RTSP sources.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:18px;">
+      ${cards || '<div class="empty">No cameras configured yet.</div>'}
+    </div>
+  `));
+});
+
+app.get('/cameras', (req, res) => {
+  const cameras = loadCameras();
+
+  const rows = cameras.map(camera => {
+    const thumbFile = path.join(THUMBS_DIR, `${camera.id}.jpg`);
+    const thumbHtml = fs.existsSync(thumbFile)
+      ? `<img src="/thumbs/${camera.id}.jpg?ts=${fs.statSync(thumbFile).mtimeMs}" style="width:160px;max-width:100%;border-radius:10px;border:1px solid var(--border);">`
+      : `<span class="muted">No thumbnail yet</span>`;
+
+    return `
+    <tr>
+      <td>${thumbHtml}</td>
+      <td><strong>${camera.name}</strong><br><span class="muted">${camera.id}</span></td>
+      <td><span class="pill">${camera.type}</span></td>
+      <td>${camera.group || 'Default'}</td>
+      <td><span class="pill">${camera.liveProfile || 'copy'}</span></td>
+      <td><code>${camera.rtspUrl.replace(/\/\/.*?:.*?@/, '//***:***@')}</code></td>
+      <td>${camera.audioEnabled ? 'Yes' : 'No'}</td>
+      <td style="white-space:nowrap;">
+        <a href="/live/${camera.id}" style="display:inline-block;margin-right:8px;text-decoration:none;">
+          <button type="button">Live</button>
+        </a>
+        <a href="/cameras/${camera.id}/edit" style="display:inline-block;margin-right:8px;text-decoration:none;">
+          <button type="button">Edit</button>
+        </a>
+        <form method="post" action="/api/cameras/${camera.id}/test" style="display:inline-block;margin-right:8px;">
+          <button type="submit">Test</button>
+        </form>
+        <form method="post" action="/api/cameras/${camera.id}/delete" style="display:inline-block;">
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+  `;
+  }).join('');
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>Configured Cameras</h2>
+      ${cameras.length === 0 ? `
+        <div class="empty">No cameras configured yet. Add your first RTSP camera below.</div>
+      ` : `
+        <table>
+          <thead>
+            <tr>
+              <th>Thumbnail</th>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Group</th>
+              <th>Live Profile</th>
+              <th>RTSP URL</th>
+              <th>Audio</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `}
+    </div>
+
+    <div class="card">
+      <h2>Add Camera</h2>
+      <form method="post" action="/api/cameras">
+        <div class="grid">
+          <div>
+            <label>Camera Name</label>
+            <input name="name" placeholder="Front Door" required>
+          </div>
+
+          <div>
+            <label>Group</label>
+            <input name="group" placeholder="Front Yard">
+          </div>
+
+          <div>
+            <label>Type</label>
+            <select name="type">
+              <option value="rtsp">RTSP Camera</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Audio Enabled</label>
+            <select name="audioEnabled">
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Live Profile</label>
+            <select name="liveProfile">
+              <option value="copy">Copy Stream</option>
+              <option value="transcode720">Transcode 720p</option>
+              <option value="transcode1080">Transcode 1080p</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <label>RTSP URL</label>
+          <input name="rtspUrl" placeholder="rtsp://user:password@192.168.1.50:554/stream1" required>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Add Camera</button>
+        </div>
+      </form>
+    </div>
+  `));
+});
+
+
+
+app.get('/live/:id', (req, res) => {
+  const cameras = loadCameras();
+  const camera = cameras.find(camera => camera.id === req.params.id);
+
+  if (!camera) {
+    return res.status(404).send(renderPage(`
+      <div class="card">
+        <h2>Camera Not Found</h2>
+        <p>No camera exists with ID <code>${escapeHtml(req.params.id)}</code>.</p>
+        <p><a href="/matrix">Return to Matrix</a></p>
+      </div>
+    `));
+  }
+
+  const mediamtxBase = process.env.MEDIAMTX_HLS_BASE || 'http://172.16.2.85:8888';
+  const hlsUrl = `${mediamtxBase}/${encodeURIComponent(camera.id)}/index.m3u8`;
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>Live Preview: ${escapeHtml(camera.name)}</h2>
+      <p class="muted">${escapeHtml(camera.group || 'Default')} · ${escapeHtml(camera.id)}</p>
+
+      <video id="video" controls autoplay muted playsinline style="width:100%;max-width:1100px;background:#000;border-radius:14px;border:1px solid var(--border);"></video>
+
+      <div style="margin-top:16px;display:flex;gap:10px;align-items:center;">
+        <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/live/start">
+          <button type="submit">Restart Stream</button>
+        </form>
+        <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/live/stop">
+          <button class="danger" type="submit">Stop Stream</button>
+        </form>
+        <a href="/matrix" style="color:#93c5fd;">Back to Matrix</a>
+      </div>
+
+      <p class="muted">HLS URL: <code>${escapeHtml(hlsUrl)}</code></p>
+    </div>
+
+    <div id="streamStatus" class="muted" style="margin-top:12px;">Preparing stream...</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script>
+      const video = document.getElementById('video');
+      const hlsUrl = ${JSON.stringify(hlsUrl)};
+      const readyUrl = '/api/cameras/${encodeURIComponent(camera.id)}/live/ready';
+      const statusEl = document.getElementById('streamStatus');
+
+      let hls = null;
+      let playerStarted = false;
+      let playerStartTime = 0;
+      let retryCount = 0;
+
+      function destroyPlayer() {
+        try {
+          if (hls) {
+            hls.destroy();
+            hls = null;
+          }
+        } catch (err) {}
+        video.removeAttribute('src');
+        video.load();
+        playerStarted = false;
+      }
+
+      function startPlayer() {
+        if (playerStarted) return;
+        playerStarted = true;
+        playerStartTime = Date.now();
+
+        statusEl.textContent = 'Stream ready. Starting player...';
+
+        const sourceUrl = hlsUrl + '?ts=' + Date.now();
+
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = sourceUrl;
+          video.play().catch(function() {});
+        } else if (window.Hls && Hls.isSupported()) {
+          hls = new Hls({
+            lowLatencyMode: false,
+            liveSyncDurationCount: 4,
+            liveMaxLatencyDurationCount: 8,
+            manifestLoadingTimeOut: 15000,
+            manifestLoadingMaxRetry: 10,
+            levelLoadingMaxRetry: 10,
+            fragLoadingMaxRetry: 10,
+            startFragPrefetch: true
+          });
+
+          hls.on(Hls.Events.ERROR, function(event, data) {
+            console.warn('HLS error', data);
+
+            if (data && data.fatal) {
+              statusEl.textContent = 'Player retrying after fatal HLS error...';
+
+              try {
+                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                  hls.startLoad();
+                  return;
+                }
+
+                if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                  hls.recoverMediaError();
+                  return;
+                }
+              } catch (err) {}
+
+              retryPlayerSoon();
+            } else if (data && data.details) {
+              statusEl.textContent = 'Player warning: ' + data.details;
+            }
+          });
+
+          hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            statusEl.textContent = 'Playing live stream.';
+            video.play().catch(function() {});
+          });
+
+          hls.loadSource(sourceUrl);
+          hls.attachMedia(video);
+        } else {
+          video.outerHTML = '<p>HLS playback is not supported in this browser.</p>';
+          statusEl.textContent = 'HLS playback is not supported in this browser.';
+        }
+
+        setTimeout(function() {
+          if (!video.currentTime || video.currentTime < 0.5) {
+            retryPlayerSoon();
+          }
+        }, 8000);
+      }
+
+      function retryPlayerSoon() {
+        if (retryCount >= 5) {
+          statusEl.textContent = 'Stream is ready, but the browser player did not start. Press Restart Stream.';
+          return;
+        }
+
+        retryCount += 1;
+        destroyPlayer();
+        statusEl.textContent = 'Retrying player startup... attempt ' + retryCount;
+
+        setTimeout(function() {
+          waitForStreamReady(1);
+        }, 2000);
+      }
+
+      function waitForStreamReady() {
+        statusEl.textContent = 'Opening persistent MediaMTX stream...';
+        setTimeout(startPlayer, 1000);
+      }
+
+      waitForStreamReady();
+    </script>
+  `));
+});
+
+app.post('/api/cameras/:id/live/start', (req, res) => {
+  const cameras = loadCameras();
+  const camera = cameras.find(camera => camera.id === req.params.id);
+
+  if (!camera) {
+    return res.status(404).json({ ok: false, error: 'Camera not found.' });
+  }
+
+  stopLiveStream(camera.id);
+  const status = startLiveStream(camera);
+
+  if (req.headers.accept && req.headers.accept.includes('text/html')) {
+    return res.redirect(`/live/${encodeURIComponent(camera.id)}`);
+  }
+
+  res.json({ ok: true, ...status });
+});
+
+app.post('/api/cameras/:id/live/stop', (req, res) => {
+  const stopped = stopLiveStream(req.params.id);
+
+  if (req.headers.accept && req.headers.accept.includes('text/html')) {
+    return res.redirect('/matrix');
+  }
+
+  res.json({ ok: true, stopped });
+});
+
+app.get('/api/cameras/:id/live/ready', (req, res) => {
+  res.json({
+    ok: true,
+    cameraId: req.params.id,
+    ...getLiveStatus(req.params.id),
+    ...getHlsReadiness(req.params.id)
+  });
+});
+
+app.get('/api/cameras/:id/live/status', (req, res) => {
+  res.json({
+    ok: true,
+    cameraId: req.params.id,
+    ...getLiveStatus(req.params.id)
+  });
+});
+
+app.get('/cameras/:id/edit', (req, res) => {
+  const cameras = loadCameras();
+  const camera = cameras.find(camera => camera.id === req.params.id);
+
+  if (!camera) {
+    return res.status(404).send(renderPage(`
+      <div class="card">
+        <h2>Camera Not Found</h2>
+        <p>No camera exists with ID <code>${escapeHtml(req.params.id)}</code>.</p>
+        <p><a href="/cameras">Return to Cameras</a></p>
+      </div>
+    `));
+  }
+
+  const lastTest = camera.lastTest
+    ? `<p><strong>Last Test:</strong> ${camera.lastTest.ok ? 'Success' : 'Failed'} at ${escapeHtml(camera.lastTest.testedAt || '')}</p>
+       ${camera.lastTest.error ? `<p><strong>Error:</strong> <code>${escapeHtml(camera.lastTest.error)}</code></p>` : ''}`
+    : `<p class="muted">No test has been run for this camera yet.</p>`;
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>Edit Camera</h2>
+      <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/update">
+        <div class="grid">
+          <div>
+            <label>Camera Name</label>
+            <input name="name" value="${escapeHtml(camera.name)}" required>
+          </div>
+
+          <div>
+            <label>Group</label>
+            <input name="group" value="${escapeHtml(camera.group || 'Default')}">
+          </div>
+
+          <div>
+            <label>Type</label>
+            <select name="type">
+              <option value="rtsp" ${camera.type === 'rtsp' ? 'selected' : ''}>RTSP Camera</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Audio Enabled</label>
+            <select name="audioEnabled">
+              <option value="true" ${camera.audioEnabled ? 'selected' : ''}>Yes</option>
+              <option value="false" ${!camera.audioEnabled ? 'selected' : ''}>No</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Live Profile</label>
+            <select name="liveProfile">
+              <option value="copy" ${(camera.liveProfile || 'copy') === 'copy' ? 'selected' : ''}>Copy Stream</option>
+              <option value="transcode720" ${camera.liveProfile === 'transcode720' ? 'selected' : ''}>Transcode 720p</option>
+              <option value="transcode1080" ${camera.liveProfile === 'transcode1080' ? 'selected' : ''}>Transcode 1080p</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <label>RTSP URL</label>
+          <input name="rtspUrl" value="${escapeHtml(camera.rtspUrl)}" required>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Save Changes</button>
+          <a href="/cameras" style="margin-left:12px;color:#93c5fd;">Cancel</a>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Test Status</h2>
+      ${lastTest}
+    </div>
+  `));
+});
+
+app.post('/api/cameras/:id/update', (req, res) => {
+  const cameras = loadCameras();
+  const camera = cameras.find(camera => camera.id === req.params.id);
+
+  if (!camera) {
+    return res.status(404).json({ ok: false, error: 'Camera not found.' });
+  }
+
+  const name = String(req.body.name || '').trim();
+  const rtspUrl = String(req.body.rtspUrl || '').trim();
+
+  if (!name || !rtspUrl) {
+    return res.status(400).json({ ok: false, error: 'Camera name and RTSP URL are required.' });
+  }
+
+  camera.name = name;
+  camera.type = req.body.type || 'rtsp';
+  camera.group = String(req.body.group || 'Default').trim() || 'Default';
+  camera.rtspUrl = rtspUrl;
+  camera.audioEnabled = req.body.audioEnabled === 'true';
+  camera.liveProfile = req.body.liveProfile || 'copy';
+  camera.updatedAt = new Date().toISOString();
+
+  saveCameras(cameras);
+  res.redirect('/cameras');
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    app: 'ScottiBYTE MultiView Server',
+    version: '0.1.0',
+    publicUrl: PUBLIC_URL,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/cameras', (req, res) => {
+  res.json(loadCameras());
+});
+
+app.post('/api/cameras', (req, res) => {
+  const cameras = loadCameras();
+
+  const name = String(req.body.name || '').trim();
+  const rtspUrl = String(req.body.rtspUrl || '').trim();
+
+  if (!name || !rtspUrl) {
+    return res.status(400).json({ ok: false, error: 'Camera name and RTSP URL are required.' });
+  }
+
+  let id = safeId(name);
+  if (cameras.some(camera => camera.id === id)) {
+    id = `${id}-${Date.now()}`;
+  }
+
+  cameras.push({
+    id,
+    name,
+    type: req.body.type || 'rtsp',
+    group: String(req.body.group || 'Default').trim() || 'Default',
+    rtspUrl,
+    audioEnabled: req.body.audioEnabled === 'true',
+    liveProfile: req.body.liveProfile || 'copy',
+    enabled: true,
+    lastTest: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  saveCameras(cameras);
+  res.redirect('/cameras');
+});
+
+
+app.post('/api/cameras/:id/test', async (req, res) => {
+  const cameras = loadCameras();
+  const camera = cameras.find(camera => camera.id === req.params.id);
+
+  if (!camera) {
+    return res.status(404).json({ ok: false, error: 'Camera not found.' });
+  }
+
+  const result = await captureThumbnail(camera);
+
+  camera.lastTest = {
+    ok: result.ok,
+    testedAt: new Date().toISOString(),
+    durationMs: result.durationMs,
+    error: result.error
+  };
+  camera.updatedAt = new Date().toISOString();
+
+  saveCameras(cameras);
+
+  if (req.headers.accept && req.headers.accept.includes('text/html')) {
+    return res.redirect('/cameras');
+  }
+
+  res.json(result);
+});
+
+app.post('/api/cameras/:id/delete', (req, res) => {
+  const cameras = loadCameras();
+  const next = cameras.filter(camera => camera.id !== req.params.id);
+
+  saveCameras(next);
+  res.redirect('/cameras');
+});
+
+ensureDataFiles();
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`ScottiBYTE MultiView Server listening on port ${PORT}`);
+});
