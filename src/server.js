@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 8080;
 const PUBLIC_URL = process.env.MULTIVIEW_PUBLIC_URL || `http://localhost:${PORT}`;
 const DATA_DIR = process.env.MULTIVIEW_DATA_DIR || '/app/data';
 const CAMERAS_FILE = path.join(DATA_DIR, 'cameras.json');
+const GROUPS_FILE = path.join(DATA_DIR, 'groups.json');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
 const HLS_DIR = path.join(DATA_DIR, 'hls');
 const MEDIAMTX_HLS_BASE = process.env.MEDIAMTX_HLS_BASE || 'http://172.16.2.85:8888';
@@ -33,6 +34,10 @@ function ensureDataFiles() {
 
   if (!fs.existsSync(CAMERAS_FILE)) {
     fs.writeFileSync(CAMERAS_FILE, JSON.stringify([], null, 2));
+  }
+
+  if (!fs.existsSync(GROUPS_FILE)) {
+    fs.writeFileSync(GROUPS_FILE, JSON.stringify([], null, 2));
   }
 
   if (!fs.existsSync(THUMBS_DIR)) {
@@ -59,6 +64,51 @@ function loadCameras() {
 function saveCameras(cameras) {
   ensureDataFiles();
   fs.writeFileSync(CAMERAS_FILE, JSON.stringify(cameras, null, 2));
+}
+
+function loadGroups() {
+  ensureDataFiles();
+
+  try {
+    const raw = fs.readFileSync(GROUPS_FILE, 'utf8');
+    const groups = JSON.parse(raw);
+    return Array.isArray(groups) ? groups.filter(Boolean).map(String) : [];
+  } catch (err) {
+    console.error('Failed to load groups.json:', err);
+    return [];
+  }
+}
+
+function saveGroups(groups) {
+  ensureDataFiles();
+
+  const cleaned = [...new Set(groups
+    .map(group => String(group || '').trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+
+  fs.writeFileSync(GROUPS_FILE, JSON.stringify(cleaned, null, 2));
+}
+
+function getGroupNames(cameras = loadCameras()) {
+  const configuredGroups = loadGroups();
+  const cameraGroups = cameras.map(camera => camera.group || 'Default');
+
+  return [...new Set([...configuredGroups, ...cameraGroups])]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function ensureGroupExists(groupName) {
+  const group = String(groupName || 'Default').trim() || 'Default';
+  const groups = getGroupNames();
+
+  if (!groups.includes(group)) {
+    groups.push(group);
+    saveGroups(groups);
+  }
+
+  return group;
 }
 
 function safeId(name) {
@@ -396,7 +446,7 @@ function renderPage(content) {
 
     main {
       padding: 32px;
-      max-width: 1400px;
+      max-width: 1800px;
     }
 
     .card {
@@ -509,6 +559,97 @@ function renderPage(content) {
       background: rgba(255,255,255,.02);
     }
 
+
+    .section-title {
+      margin-bottom: 18px;
+    }
+
+    .section-title h2 {
+      margin: 0 0 8px 0;
+    }
+
+    .camera-list-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: 150px 190px 120px minmax(520px, 1fr) 130px 430px;
+      gap: 12px;
+      align-items: center;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 12px 12px 0 0;
+      padding: 12px;
+      color: #cbd5e1;
+      font-weight: bold;
+      font-size: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    }
+
+    .camera-list-header a {
+      color: #cbd5e1;
+      text-decoration: none;
+      border-bottom: 1px dotted #64748b;
+      cursor: pointer;
+    }
+
+    .camera-list-header a::after {
+      content: ' ⇅';
+      color: #64748b;
+      font-size: 11px;
+      font-weight: normal;
+    }
+
+    .camera-list-header a:hover {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+
+    .camera-list-header a:hover::after {
+      color: var(--accent);
+    }
+
+    .camera-list-header a.active-sort::after {
+      content: '';
+    }
+
+    .camera-table-scroll {
+      max-height: calc(100vh - 300px);
+      overflow-y: auto;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 0 0 12px 12px;
+      position: relative;
+    }
+
+    .camera-row {
+      min-width: 1540px;
+      display: grid;
+      grid-template-columns: 150px 190px 120px minmax(520px, 1fr) 130px 430px;
+      gap: 12px;
+      align-items: center;
+      padding: 14px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .camera-row:last-child {
+      border-bottom: 0;
+    }
+
+    .camera-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: flex-start;
+      white-space: nowrap;
+    }
+
+    .sort-indicator {
+      color: var(--accent);
+      font-size: 12px;
+      margin-left: 4px;
+    }
     @media (max-width: 850px) {
       main {
         padding: 18px;
@@ -543,6 +684,7 @@ function renderPage(content) {
   <nav>
     <a href="/">Dashboard</a>
     <a href="/cameras">Cameras</a>
+    <a href="/groups">Groups</a>
     <a href="/matrix">Matrix</a>
     <a href="/engine">Stream Engine</a>
     <a href="/api/health">API Health</a>
@@ -822,7 +964,7 @@ app.get('/matrix', (req, res) => {
             <button type="button">Edit</button>
           </a>
           <form method="post" action="/api/cameras/${camera.id}/test">
-            <button type="submit">Test</button>
+            <button type="submit">Refresh Thumbnail</button>
           </form>
         </div>
       </div>
@@ -841,68 +983,201 @@ app.get('/matrix', (req, res) => {
   `));
 });
 
-app.get('/cameras', (req, res) => {
-  const cameras = loadCameras();
 
-  const rows = cameras.map(camera => {
+app.get('/groups', (req, res) => {
+  const cameras = loadCameras();
+  const groups = getGroupNames(cameras);
+
+  const groupRows = groups.map(group => {
+    const count = cameras.filter(camera => (camera.group || 'Default') === group).length;
+    const deleteControl = count === 0
+      ? `<form method="post" action="/api/groups/${encodeURIComponent(group)}/delete" style="display:inline-block;">
+           <button class="danger" type="submit">Delete</button>
+         </form>`
+      : `<span class="muted">Delete disabled while cameras are assigned</span>`;
+
+    return `
+      <tr>
+        <td><strong>${escapeHtml(group)}</strong></td>
+        <td>${count}</td>
+        <td>
+          <form method="post" action="/api/groups/${encodeURIComponent(group)}/rename" style="display:flex;gap:8px;align-items:center;">
+            <input name="name" value="${escapeHtml(group)}" style="max-width:260px;">
+            <button type="submit">Rename</button>
+          </form>
+        </td>
+        <td>${deleteControl}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const groupOptions = groups.map(group => {
+    return `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`;
+  }).join('');
+
+  const cameraRows = cameras.map(camera => {
+    const options = groups.map(group => {
+      const selected = (camera.group || 'Default') === group ? 'selected' : '';
+      return `<option value="${escapeHtml(group)}" ${selected}>${escapeHtml(group)}</option>`;
+    }).join('');
+
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(camera.name)}</strong><br>
+          <span class="muted">${escapeHtml(camera.id)}</span>
+        </td>
+        <td>${escapeHtml(camera.group || 'Default')}</td>
+        <td>
+          <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/group" style="display:flex;gap:8px;align-items:center;">
+            <select name="group" style="max-width:260px;">
+              ${options}
+            </select>
+            <button type="submit">Assign</button>
+          </form>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>Camera Groups</h2>
+      <p class="muted">Groups are admin metadata used to organize cameras. The Android TV client may use these for filtering, but user-created viewing layouts belong in the Android app.</p>
+
+      <form method="post" action="/api/groups" style="display:flex;gap:10px;align-items:end;max-width:560px;">
+        <div style="flex:1;">
+          <label>New Group Name</label>
+          <input name="name" placeholder="Garage">
+        </div>
+        <button type="submit">Create Group</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Existing Groups</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Group</th>
+            <th>Cameras</th>
+            <th>Rename</th>
+            <th>Delete</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${groupRows || '<tr><td colspan="4" class="muted">No groups configured.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Assign Cameras to Groups</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Camera</th>
+            <th>Current Group</th>
+            <th>Assign Group</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${cameraRows || '<tr><td colspan="3" class="muted">No cameras configured.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `));
+});
+
+
+app.get('/cameras', async (req, res) => {
+  const cameras = loadCameras();
+  const engine = await getStreamEngineStatus();
+  const engineById = new Map(engine.cameras.map(camera => [camera.id, camera]));
+  const sort = String(req.query.sort || 'name').toLowerCase();
+  const dir = String(req.query.dir || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc';
+  const multiplier = dir === 'desc' ? -1 : 1;
+
+  const sortedCameras = [...cameras].sort((a, b) => {
+    if (sort === 'name') {
+      return multiplier * String(a.name || '').localeCompare(String(b.name || ''));
+    }
+
+    if (sort === 'group') {
+      const groupCompare = String(a.group || 'Default').localeCompare(String(b.group || 'Default'));
+      return groupCompare !== 0
+        ? multiplier * groupCompare
+        : String(a.name || '').localeCompare(String(b.name || ''));
+    }
+
+    if (sort === 'audio') {
+      const aAudio = Boolean(engineById.get(a.id)?.audioCodec);
+      const bAudio = Boolean(engineById.get(b.id)?.audioCodec);
+      const audioCompare = Number(aAudio) - Number(bAudio);
+      return audioCompare !== 0
+        ? multiplier * audioCompare
+        : String(a.name || '').localeCompare(String(b.name || ''));
+    }
+
+    return 0;
+  });
+
+  const nextDir = dir === 'asc' ? 'desc' : 'asc';
+
+  function sortHeader(label, key) {
+    const targetDir = sort === key ? nextDir : 'asc';
+    const indicator = sort === key
+      ? `<span class="sort-indicator">${dir === 'asc' ? '▲' : '▼'}</span>`
+      : '';
+    const activeClass = sort === key ? ' class="active-sort"' : '';
+
+    return `<a${activeClass} href="/cameras?sort=${key}&dir=${targetDir}" title="Sort by ${label}">${label}${indicator}</a>`;
+  }
+
+  const rows = sortedCameras.map(camera => {
     const thumbFile = path.join(THUMBS_DIR, `${camera.id}.jpg`);
     const thumbHtml = fs.existsSync(thumbFile)
       ? `<img src="/thumbs/${camera.id}.jpg?ts=${fs.statSync(thumbFile).mtimeMs}" style="width:160px;max-width:100%;border-radius:10px;border:1px solid var(--border);">`
       : `<span class="muted">No thumbnail yet</span>`;
 
+    const streamInfo = engineById.get(camera.id);
+    const audioHtml = streamInfo?.audioCodec
+      ? `<span class="pill" style="background:#14532d;color:#dcfce7;" title="${escapeHtml(streamInfo.audioCodec)}">Audio</span>`
+      : '<span class="pill">Video Only</span>';
+
     return `
-    <tr>
-      <td>${thumbHtml}</td>
-      <td><strong>${camera.name}</strong><br><span class="muted">${camera.id}</span></td>
-      <td><span class="pill">${camera.type}</span></td>
-      <td>${camera.group || 'Default'}</td>
-      <td><span class="pill">${camera.liveProfile || 'copy'}</span></td>
-      <td><code>${camera.rtspUrl.replace(/\/\/.*?:.*?@/, '//***:***@')}</code></td>
-      <td>${camera.audioEnabled ? 'Yes' : 'No'}</td>
-      <td style="white-space:nowrap;">
-        <a href="/live/${camera.id}" style="display:inline-block;margin-right:8px;text-decoration:none;">
+    <div class="camera-row">
+      <div>${thumbHtml}</div>
+      <div><strong>${escapeHtml(camera.name)}</strong><br><span class="muted">${escapeHtml(camera.id)}</span></div>
+      <div>${escapeHtml(camera.group || 'Default')}</div>
+      <div><code>${escapeHtml(camera.rtspUrl).replace(/\/\/.*?:.*?@/, '//***:***@')}</code></div>
+      <div>${audioHtml}</div>
+      <div class="camera-actions">
+        <a href="/live/${encodeURIComponent(camera.id)}" style="text-decoration:none;">
           <button type="button">Live</button>
         </a>
-        <a href="/cameras/${camera.id}/edit" style="display:inline-block;margin-right:8px;text-decoration:none;">
+        <a href="/cameras/${encodeURIComponent(camera.id)}/edit" style="text-decoration:none;">
           <button type="button">Edit</button>
         </a>
-        <form method="post" action="/api/cameras/${camera.id}/test" style="display:inline-block;margin-right:8px;">
-          <button type="submit">Test</button>
+        <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/test">
+          <button type="submit">Refresh Thumbnail</button>
         </form>
-        <form method="post" action="/api/cameras/${camera.id}/delete" style="display:inline-block;">
+        <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/delete">
           <button class="danger" type="submit">Delete</button>
         </form>
-      </td>
-    </tr>
+      </div>
+    </div>
   `;
   }).join('');
 
+  const groups = getGroupNames(cameras);
+  const groupOptions = groups.map(group => `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`).join('');
+
   res.send(renderPage(`
     <div class="card">
-      <h2>Configured Cameras</h2>
-      ${cameras.length === 0 ? `
-        <div class="empty">No cameras configured yet. Add your first RTSP camera below.</div>
-      ` : `
-        <table>
-          <thead>
-            <tr>
-              <th>Thumbnail</th>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Group</th>
-              <th>Live Profile</th>
-              <th>RTSP URL</th>
-              <th>Audio</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `}
-    </div>
+      <h2>Add RTSP Camera</h2>
+      <p class="muted">Add a new RTSP camera source. The server stores the RTSP credentials and publishes the camera through MediaMTX.</p>
 
-    <div class="card">
-      <h2>Add Camera</h2>
       <form method="post" action="/api/cameras">
         <div class="grid">
           <div>
@@ -912,13 +1187,8 @@ app.get('/cameras', (req, res) => {
 
           <div>
             <label>Group</label>
-            <input name="group" placeholder="Front Yard">
-          </div>
-
-          <div>
-            <label>Type</label>
-            <select name="type">
-              <option value="rtsp">RTSP Camera</option>
+            <select name="group">
+              ${groupOptions}
             </select>
           </div>
 
@@ -929,16 +1199,10 @@ app.get('/cameras', (req, res) => {
               <option value="false">No</option>
             </select>
           </div>
-
-          <div>
-            <label>Live Profile</label>
-            <select name="liveProfile">
-              <option value="copy">Copy Stream</option>
-              <option value="transcode720">Transcode 720p</option>
-              <option value="transcode1080">Transcode 1080p</option>
-            </select>
-          </div>
         </div>
+
+        <input type="hidden" name="type" value="rtsp">
+        <input type="hidden" name="liveProfile" value="copy">
 
         <div style="margin-top:16px;">
           <label>RTSP URL</label>
@@ -950,9 +1214,31 @@ app.get('/cameras', (req, res) => {
         </div>
       </form>
     </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Configured Cameras</h2>
+        <p class="muted">RTSP camera inputs published through MediaMTX as stable HLS streams.</p>
+      </div>
+
+      ${cameras.length === 0 ? `
+        <div class="empty">No cameras configured yet. Add your first RTSP camera above.</div>
+      ` : `
+        <div class="camera-list-header">
+          <div>Thumbnail</div>
+          <div>${sortHeader('Name', 'name')}</div>
+          <div>${sortHeader('Group', 'group')}</div>
+          <div>RTSP URL</div>
+          <div>${sortHeader('Stream Audio', 'audio')}</div>
+          <div>Action</div>
+        </div>
+        <div class="camera-table-scroll">
+          ${rows}
+        </div>
+      `}
+    </div>
   `));
 });
-
 
 
 app.get('/live/:id', (req, res) => {
@@ -1249,7 +1535,7 @@ app.post('/api/cameras/:id/update', (req, res) => {
 
   camera.name = name;
   camera.type = req.body.type || 'rtsp';
-  camera.group = String(req.body.group || 'Default').trim() || 'Default';
+  camera.group = ensureGroupExists(req.body.group);
   camera.rtspUrl = rtspUrl;
   camera.audioEnabled = req.body.audioEnabled === 'true';
   camera.liveProfile = req.body.liveProfile || 'copy';
@@ -1304,8 +1590,7 @@ app.get('/api/tv/config', async (req, res) => {
       };
     });
 
-  const groups = [...new Set(cameras.map(camera => camera.group || 'Default'))]
-    .sort((a, b) => a.localeCompare(b))
+  const groups = getGroupNames()
     .map(name => ({
       name,
       purpose: 'camera-metadata',
@@ -1342,11 +1627,90 @@ app.get('/api/tv/config', async (req, res) => {
   });
 });
 
+
+app.post('/api/groups', (req, res) => {
+  const name = String(req.body.name || '').trim();
+
+  if (!name) {
+    return res.status(400).json({ ok: false, error: 'Group name is required.' });
+  }
+
+  ensureGroupExists(name);
+  res.redirect('/groups');
+});
+
+app.post('/api/groups/:groupName/rename', (req, res) => {
+  const oldName = String(req.params.groupName || '').trim();
+  const newName = String(req.body.name || '').trim();
+
+  if (!oldName || !newName) {
+    return res.status(400).json({ ok: false, error: 'Old and new group names are required.' });
+  }
+
+  const cameras = loadCameras();
+  let changed = false;
+
+  for (const camera of cameras) {
+    if ((camera.group || 'Default') === oldName) {
+      camera.group = newName;
+      camera.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+
+  if (changed) saveCameras(cameras);
+
+  const groups = getGroupNames(cameras)
+    .filter(group => group !== oldName);
+
+  groups.push(newName);
+  saveGroups(groups);
+
+  res.redirect('/groups');
+});
+
+app.post('/api/groups/:groupName/delete', (req, res) => {
+  const groupName = String(req.params.groupName || '').trim();
+  const cameras = loadCameras();
+  const count = cameras.filter(camera => (camera.group || 'Default') === groupName).length;
+
+  if (count > 0) {
+    return res.status(400).send(renderPage(`
+      <div class="card">
+        <h2>Cannot Delete Group</h2>
+        <p>The group <code>${escapeHtml(groupName)}</code> still has ${count} camera(s) assigned.</p>
+        <p><a href="/groups" style="color:#93c5fd;">Return to Groups</a></p>
+      </div>
+    `));
+  }
+
+  const groups = loadGroups().filter(group => group !== groupName);
+  saveGroups(groups);
+
+  res.redirect('/groups');
+});
+
+app.post('/api/cameras/:id/group', (req, res) => {
+  const cameras = loadCameras();
+  const camera = cameras.find(camera => camera.id === req.params.id);
+
+  if (!camera) {
+    return res.status(404).json({ ok: false, error: 'Camera not found.' });
+  }
+
+  const group = ensureGroupExists(req.body.group);
+  camera.group = group;
+  camera.updatedAt = new Date().toISOString();
+
+  saveCameras(cameras);
+  res.redirect('/groups');
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     app: 'ScottiBYTE MultiView Server',
-    version: '0.1.0',
+    version: '0.3.1',
     publicUrl: PUBLIC_URL,
     timestamp: new Date().toISOString()
   });
@@ -1375,7 +1739,7 @@ app.post('/api/cameras', (req, res) => {
     id,
     name,
     type: req.body.type || 'rtsp',
-    group: String(req.body.group || 'Default').trim() || 'Default',
+    group: ensureGroupExists(req.body.group),
     rtspUrl,
     audioEnabled: req.body.audioEnabled === 'true',
     liveProfile: req.body.liveProfile || 'copy',

@@ -16,3 +16,4 @@ mediamtx/mediamtx.yml.before*
 
 # Local source backups
 src/server.js.*
+data/groups.json
