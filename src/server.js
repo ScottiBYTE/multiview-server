@@ -1264,6 +1264,62 @@ app.get('/api/engine/status', async (req, res) => {
   res.json(await getStreamEngineStatus());
 });
 
+
+app.get('/api/tv/config', async (req, res) => {
+  const engine = await getStreamEngineStatus();
+
+  const cameras = engine.cameras
+    .filter(camera => camera.enabled !== false)
+    .map(camera => {
+      const resolution = camera.width && camera.height
+        ? `${camera.width}x${camera.height}`
+        : null;
+
+      return {
+        id: camera.id,
+        name: camera.name,
+        group: camera.group || 'Default',
+        enabled: camera.enabled !== false,
+        ready: camera.ready,
+        hlsUrl: camera.hlsUrl,
+        liveUrl: `${PUBLIC_URL}/live/${encodeURIComponent(camera.id)}`,
+        thumbnailUrl: `${PUBLIC_URL}/thumbs/${encodeURIComponent(camera.id)}.jpg`,
+        resolution,
+        width: camera.width || null,
+        height: camera.height || null,
+        videoCodec: camera.videoCodec || null,
+        videoProfile: camera.videoProfile || null,
+        videoLevel: camera.videoLevel || null,
+        audioCodec: camera.audioCodec || null
+      };
+    });
+
+  const groups = [...new Set(cameras.map(camera => camera.group || 'Default'))]
+    .sort((a, b) => a.localeCompare(b));
+
+  res.json({
+    ok: true,
+    app: 'ScottiBYTE MultiView Server',
+    version: '0.2.0',
+    role: 'android-tv-config',
+    serverName: 'ScottiBYTE MultiView Server',
+    publicUrl: PUBLIC_URL,
+    hlsBaseUrl: MEDIAMTX_HLS_BASE,
+    mediamtxOnline: engine.mediamtxOk,
+    cameraCount: cameras.length,
+    readyCount: cameras.filter(camera => camera.ready).length,
+    defaultLayout: {
+      name: 'All Cameras',
+      type: 'grid',
+      columns: 'auto',
+      cameraIds: cameras.map(camera => camera.id)
+    },
+    groups,
+    cameras,
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
