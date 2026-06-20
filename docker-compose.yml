@@ -17,11 +17,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8080
-      - TZ=${TZ:-America/Chicago}
-      - MULTIVIEW_PUBLIC_URL=${MULTIVIEW_PUBLIC_URL:-http://172.16.2.85:8080}
+      - TZ=${TZ}
+      - MULTIVIEW_PUBLIC_URL=${MULTIVIEW_PUBLIC_URL}
       - MULTIVIEW_DATA_DIR=/app/data
-      - MEDIAMTX_API_BASE=http://127.0.0.1:9997
-      - MEDIAMTX_HLS_BASE=http://172.16.2.85:8888
+      - MEDIAMTX_API_BASE=${MEDIAMTX_API_BASE}
+      - MEDIAMTX_HLS_BASE=${MEDIAMTX_HLS_BASE}
     volumes:
       - ./src:/app
       - ./data:/app/data
