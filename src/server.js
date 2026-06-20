@@ -4,6 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 
 const app = express();
 
@@ -12,10 +13,17 @@ const PUBLIC_URL = process.env.MULTIVIEW_PUBLIC_URL || `http://localhost:${PORT}
 const DATA_DIR = process.env.MULTIVIEW_DATA_DIR || '/app/data';
 const CAMERAS_FILE = path.join(DATA_DIR, 'cameras.json');
 const GROUPS_FILE = path.join(DATA_DIR, 'groups.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const TV_CLIENTS_FILE = path.join(DATA_DIR, 'tv-clients.json');
+const PAIRING_REQUESTS_FILE = path.join(DATA_DIR, 'pairing-requests.json');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
 const HLS_DIR = path.join(DATA_DIR, 'hls');
 const MEDIAMTX_HLS_BASE = process.env.MEDIAMTX_HLS_BASE || 'http://172.16.2.85:8888';
 const MEDIAMTX_API_BASE = process.env.MEDIAMTX_API_BASE || 'http://127.0.0.1:9997';
+
+const SESSION_COOKIE = 'multiview_session';
+const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const sessions = new Map();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -26,6 +34,8 @@ app.use('/hls', (req, res, next) => {
   res.setHeader('Expires', '0');
   next();
 }, express.static(HLS_DIR));
+
+app.use(requireLogin);
 
 function ensureDataFiles() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -38,6 +48,18 @@ function ensureDataFiles() {
 
   if (!fs.existsSync(GROUPS_FILE)) {
     fs.writeFileSync(GROUPS_FILE, JSON.stringify([], null, 2));
+  }
+
+  if (!fs.existsSync(USERS_FILE)) {
+    fs.writeFileSync(USERS_FILE, JSON.stringify([], null, 2));
+  }
+
+  if (!fs.existsSync(TV_CLIENTS_FILE)) {
+    fs.writeFileSync(TV_CLIENTS_FILE, JSON.stringify([], null, 2));
+  }
+
+  if (!fs.existsSync(PAIRING_REQUESTS_FILE)) {
+    fs.writeFileSync(PAIRING_REQUESTS_FILE, JSON.stringify([], null, 2));
   }
 
   if (!fs.existsSync(THUMBS_DIR)) {
@@ -111,6 +133,277 @@ function ensureGroupExists(groupName) {
   return group;
 }
 
+
+function loadUsers() {
+  ensureDataFiles();
+
+  try {
+    const raw = fs.readFileSync(USERS_FILE, 'utf8');
+    const users = JSON.parse(raw);
+    return Array.isArray(users) ? users : [];
+  } catch (err) {
+    console.error('Failed to load users.json:', err);
+    return [];
+  }
+}
+
+function saveUsers(users) {
+  ensureDataFiles();
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+function hashPassword(password) {
+  const iterations = 210000;
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(String(password || ''), salt, iterations, 32, 'sha256').toString('hex');
+  return `pbkdf2_sha256$${iterations}$${salt}$${hash}`;
+}
+
+function verifyPassword(password, storedHash) {
+  const parts = String(storedHash || '').split('$');
+
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2_sha256') {
+    return false;
+  }
+
+  const iterations = Number(parts[1]);
+  const salt = parts[2];
+  const expected = Buffer.from(parts[3], 'hex');
+
+  if (!iterations || !salt || expected.length === 0) {
+    return false;
+  }
+
+  const actual = crypto.pbkdf2Sync(String(password || ''), salt, iterations, expected.length, 'sha256');
+
+  if (actual.length !== expected.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map(part => part.trim())
+      .filter(Boolean)
+      .map(part => {
+        const splitAt = part.indexOf('=');
+        if (splitAt === -1) return [part, ''];
+        return [
+          decodeURIComponent(part.slice(0, splitAt)),
+          decodeURIComponent(part.slice(splitAt + 1))
+        ];
+      })
+  );
+}
+
+function createSession(user) {
+  const token = crypto.randomBytes(32).toString('hex');
+
+  sessions.set(token, {
+    username: user.username,
+    role: user.role || 'admin',
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_TTL_MS
+  });
+
+  return token;
+}
+
+function getSession(req) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+
+  if (!token) return null;
+
+  const session = sessions.get(token);
+
+  if (!session) return null;
+
+  if (Date.now() > session.expiresAt) {
+    sessions.delete(token);
+    return null;
+  }
+
+  session.expiresAt = Date.now() + SESSION_TTL_MS;
+  return session;
+}
+
+function setSessionCookie(res, token) {
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`);
+}
+
+function clearSessionCookie(req, res) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (token) sessions.delete(token);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+}
+
+function hasAdminUser() {
+  return loadUsers().some(user => user.role === 'admin');
+}
+
+
+function loadTvClients() {
+  ensureDataFiles();
+
+  try {
+    const raw = fs.readFileSync(TV_CLIENTS_FILE, 'utf8');
+    const clients = JSON.parse(raw);
+    return Array.isArray(clients) ? clients : [];
+  } catch (err) {
+    console.error('Failed to load tv-clients.json:', err);
+    return [];
+  }
+}
+
+function saveTvClients(clients) {
+  ensureDataFiles();
+  fs.writeFileSync(TV_CLIENTS_FILE, JSON.stringify(clients, null, 2));
+}
+
+function loadPairingRequests() {
+  ensureDataFiles();
+
+  try {
+    const raw = fs.readFileSync(PAIRING_REQUESTS_FILE, 'utf8');
+    const requests = JSON.parse(raw);
+    return Array.isArray(requests) ? requests : [];
+  } catch (err) {
+    console.error('Failed to load pairing-requests.json:', err);
+    return [];
+  }
+}
+
+function savePairingRequests(requests) {
+  ensureDataFiles();
+  fs.writeFileSync(PAIRING_REQUESTS_FILE, JSON.stringify(requests, null, 2));
+}
+
+function cleanupExpiredPairingRequests() {
+  const now = Date.now();
+  const active = loadPairingRequests().filter(request => {
+    return !request.deniedAt && Date.parse(request.expiresAt || '') > now;
+  });
+
+  savePairingRequests(active);
+  return active;
+}
+
+function generatePairingCode() {
+  const requests = cleanupExpiredPairingRequests();
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const code = String(crypto.randomInt(100000, 1000000));
+    if (!requests.some(request => request.pairingCode === code)) {
+      return code;
+    }
+  }
+
+  return String(Date.now()).slice(-6);
+}
+
+function formatPairingCode(code) {
+  const clean = String(code || '').replace(/\D/g, '').slice(0, 6);
+  return clean.length === 6 ? `${clean.slice(0, 3)}-${clean.slice(3)}` : clean;
+}
+
+function generateTvClientId() {
+  return `tv_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+function generateTvClientToken() {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+function requireTvClientAuth(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const bearer = authHeader.match(/^Bearer\s+(.+)$/i);
+  const suppliedToken = bearer ? bearer[1] : '';
+
+  if (!suppliedToken) {
+    return res.status(401).json({
+      ok: false,
+      error: 'TV client token required'
+    });
+  }
+
+  const clients = loadTvClients();
+  const client = clients.find(client => {
+    return !client.revokedAt && verifyPassword(suppliedToken, client.tokenHash);
+  });
+
+  if (!client) {
+    return res.status(401).json({
+      ok: false,
+      error: 'Invalid TV client token'
+    });
+  }
+
+  client.lastSeenAt = new Date().toISOString();
+  saveTvClients(clients);
+
+  req.tvClient = {
+    id: client.id,
+    name: client.name,
+    role: 'tv-client'
+  };
+
+  return next();
+}
+
+
+function wantsJson(req) {
+  return String(req.headers.accept || '').includes('application/json')
+    || req.path.startsWith('/api/');
+}
+
+function requireLogin(req, res, next) {
+  const publicPaths = new Set([
+    '/login',
+    '/setup',
+    '/logout',
+    '/api/health'
+  ]);
+
+  if (req.path === '/api/tv/config') {
+    return requireTvClientAuth(req, res, next);
+  }
+
+  if (req.path === '/api/tv/pairing/request' || req.path === '/api/tv/pairing/status') {
+    return next();
+  }
+
+  if (publicPaths.has(req.path)) {
+    return next();
+  }
+
+  if (!hasAdminUser()) {
+    if (wantsJson(req)) {
+      return res.status(401).json({ ok: false, error: 'Admin setup required' });
+    }
+    return res.redirect('/setup');
+  }
+
+  const session = getSession(req);
+
+  if (session && session.role === 'admin') {
+    req.user = session;
+    return next();
+  }
+
+  if (wantsJson(req)) {
+    return res.status(401).json({ ok: false, error: 'Login required' });
+  }
+
+  return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl || '/')}`);
+}
+
+
 function safeId(name) {
   return String(name || 'camera')
     .toLowerCase()
@@ -181,7 +474,8 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;');
 }
 
-function renderPage(content) {
+function renderPage(content, options = {}) {
+  const hideNav = Boolean(options.hideNav);
   return `
 <!doctype html>
 <html>
@@ -489,14 +783,18 @@ function renderPage(content) {
     <div class="subtitle">Self-hosted camera gateway for lightweight Android TV and remote clients</div>
   </header>
 
+  ${hideNav ? '' : `
   <nav>
     <a href="/">Dashboard</a>
     <a href="/cameras">Cameras</a>
     <a href="/groups">Groups</a>
     <a href="/matrix">Matrix</a>
     <a href="/engine">Stream Engine</a>
+    <a href="/tv-clients">TV Clients</a>
     <a href="/api/health">API Health</a>
+    <a href="/logout">Logout</a>
   </nav>
+  `}
 
   <main>
     ${content}
@@ -633,6 +931,153 @@ async function getStreamEngineStatus() {
 }
 
 
+
+app.get('/setup', (req, res) => {
+  if (hasAdminUser()) {
+    return res.redirect('/login');
+  }
+
+  res.send(renderPage(`
+    <div class="card" style="max-width:640px;">
+      <h2>Create Admin User</h2>
+      <p class="muted">No admin account exists yet. Create the first administrator for ScottiBYTE MultiView Server.</p>
+
+      <form method="post" action="/setup">
+        <div style="margin-bottom:16px;">
+          <label>Admin Username</label>
+          <input name="username" value="scott" required autocomplete="username">
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <label>Password</label>
+          <input name="password" type="password" required autocomplete="new-password">
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <label>Confirm Password</label>
+          <input name="confirmPassword" type="password" required autocomplete="new-password">
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Create Admin</button>
+        </div>
+      </form>
+    </div>
+  `, { hideNav: true }));
+});
+
+app.post('/setup', (req, res) => {
+  if (hasAdminUser()) {
+    return res.status(403).send(renderPage(`
+      <div class="card">
+        <h2>Setup Locked</h2>
+        <p>An admin user already exists.</p>
+        <p><a href="/login" style="color:#93c5fd;">Go to Login</a></p>
+      </div>
+    `, { hideNav: true }));
+  }
+
+  const username = String(req.body.username || '').trim();
+  const password = String(req.body.password || '');
+  const confirmPassword = String(req.body.confirmPassword || '');
+
+  if (!username || password.length < 10) {
+    return res.status(400).send(renderPage(`
+      <div class="card">
+        <h2>Invalid Setup</h2>
+        <p>Username is required and password must be at least 10 characters.</p>
+        <p><a href="/setup" style="color:#93c5fd;">Try again</a></p>
+      </div>
+    `, { hideNav: true }));
+  }
+
+  if (password !== confirmPassword) {
+    return res.status(400).send(renderPage(`
+      <div class="card">
+        <h2>Passwords Do Not Match</h2>
+        <p><a href="/setup" style="color:#93c5fd;">Try again</a></p>
+      </div>
+    `, { hideNav: true }));
+  }
+
+  const user = {
+    username,
+    role: 'admin',
+    passwordHash: hashPassword(password),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  saveUsers([user]);
+
+  const token = createSession(user);
+  setSessionCookie(res, token);
+
+  res.redirect('/');
+});
+
+app.get('/login', (req, res) => {
+  if (!hasAdminUser()) {
+    return res.redirect('/setup');
+  }
+
+  const next = String(req.query.next || '/');
+
+  res.send(renderPage(`
+    <div class="card" style="max-width:520px;">
+      <h2>Admin Login</h2>
+      <p class="muted">Sign in to manage ScottiBYTE MultiView Server.</p>
+
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="${escapeHtml(next)}">
+
+        <div style="margin-bottom:16px;">
+          <label>Username</label>
+          <input name="username" required autocomplete="username">
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <label>Password</label>
+          <input name="password" type="password" required autocomplete="current-password">
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Login</button>
+        </div>
+      </form>
+    </div>
+  `, { hideNav: true }));
+});
+
+app.post('/login', (req, res) => {
+  const username = String(req.body.username || '').trim();
+  const password = String(req.body.password || '');
+  const next = String(req.body.next || '/');
+
+  const user = loadUsers().find(user => user.username === username && user.role === 'admin');
+
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    return res.status(401).send(renderPage(`
+      <div class="card" style="max-width:520px;">
+        <h2>Login Failed</h2>
+        <p>Invalid username or password.</p>
+        <p><a href="/login" style="color:#93c5fd;">Try again</a></p>
+      </div>
+    `, { hideNav: true }));
+  }
+
+  const token = createSession(user);
+  setSessionCookie(res, token);
+
+  res.redirect(next.startsWith('/') ? next : '/');
+});
+
+app.get('/logout', (req, res) => {
+  clearSessionCookie(req, res);
+  res.redirect('/login');
+});
+
+
 app.get('/', (req, res) => {
   const cameras = loadCameras();
 
@@ -657,6 +1102,293 @@ app.get('/', (req, res) => {
   `));
 });
 
+
+
+
+app.get('/tv-clients', (req, res) => {
+  const pairingRequests = cleanupExpiredPairingRequests();
+  const tvClients = loadTvClients().filter(client => !client.revokedAt);
+
+  const pendingRows = pairingRequests
+    .filter(request => !request.approvedAt && !request.deniedAt)
+    .map(request => {
+      return `
+        <tr>
+          <td><strong>${escapeHtml(request.name || 'Android TV Client')}</strong><br><span class="muted">${escapeHtml(request.id)}</span></td>
+          <td><code>${escapeHtml(formatPairingCode(request.pairingCode))}</code></td>
+          <td>${escapeHtml(request.createdAt || '')}</td>
+          <td>${escapeHtml(request.expiresAt || '')}</td>
+          <td style="white-space:nowrap;">
+            <form method="post" action="/api/tv/pairing/${encodeURIComponent(request.id)}/authorize" style="display:inline-block;margin-right:8px;">
+              <button type="submit">Authorize</button>
+            </form>
+            <form method="post" action="/api/tv/pairing/${encodeURIComponent(request.id)}/deny" style="display:inline-block;">
+              <button class="danger" type="submit">Deny</button>
+            </form>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+  const approvedWaitingRows = pairingRequests
+    .filter(request => request.approvedAt && !request.deniedAt)
+    .map(request => {
+      return `
+        <tr>
+          <td><strong>${escapeHtml(request.name || 'Android TV Client')}</strong><br><span class="muted">${escapeHtml(request.id)}</span></td>
+          <td><code>${escapeHtml(formatPairingCode(request.pairingCode))}</code></td>
+          <td>${escapeHtml(request.approvedAt || '')}</td>
+          <td>${escapeHtml(request.expiresAt || '')}</td>
+          <td><span class="pill">Waiting for client</span></td>
+        </tr>
+      `;
+    }).join('');
+
+  const clientRows = tvClients.map(client => {
+    return `
+      <tr>
+        <td><strong>${escapeHtml(client.name || 'Android TV Client')}</strong><br><span class="muted">${escapeHtml(client.id)}</span></td>
+        <td>${escapeHtml(client.createdAt || '')}</td>
+        <td>${client.lastSeenAt ? escapeHtml(client.lastSeenAt) : '<span class="muted">Never</span>'}</td>
+        <td style="white-space:nowrap;">
+          <form method="post" action="/api/tv/clients/${encodeURIComponent(client.id)}/revoke" style="display:inline-block;">
+            <button class="danger" type="submit">Revoke</button>
+          </form>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>TV Clients</h2>
+      <p class="muted">Authorize Android TV clients without giving them admin credentials. TV clients receive read-only access to the camera catalog API.</p>
+    </div>
+
+    <div class="card">
+      <h2>Authorize Client by Pairing Code</h2>
+      <p class="muted">When the Android TV app starts, it will display a short pairing code. Enter that code here to authorize the client.</p>
+
+      <form method="post" action="/api/tv/pairing/authorize-code" style="display:flex;gap:10px;align-items:end;max-width:520px;">
+        <div style="flex:1;">
+          <label>Pairing Code</label>
+          <input name="pairingCode" placeholder="483-927" required>
+        </div>
+        <button type="submit">Authorize</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Pending Clients</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Pairing Code</th>
+            <th>Requested</th>
+            <th>Expires</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${pendingRows || '<tr><td colspan="5" class="muted">No pending TV clients.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Approved / Waiting for Client</h2>
+      <p class="muted">These clients have been approved by an admin but have not yet picked up their device token.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Pairing Code</th>
+            <th>Approved</th>
+            <th>Expires</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${approvedWaitingRows || '<tr><td colspan="5" class="muted">No approved clients waiting for token pickup.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Authorized Clients</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Authorized</th>
+            <th>Last Seen</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${clientRows || '<tr><td colspan="4" class="muted">No authorized TV clients.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `));
+});
+
+app.post('/api/tv/pairing/request', (req, res) => {
+  if (!hasAdminUser()) {
+    return res.status(503).json({
+      ok: false,
+      error: 'Server admin setup required before pairing TV clients'
+    });
+  }
+
+  const name = String(req.body.clientName || req.body.name || 'Android TV Client').trim().slice(0, 80) || 'Android TV Client';
+  const pairingCode = generatePairingCode();
+  const now = Date.now();
+
+  const request = {
+    id: `pair_${crypto.randomBytes(8).toString('hex')}`,
+    name,
+    pairingCode,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 10 * 60 * 1000).toISOString(),
+    approvedAt: null,
+    deniedAt: null
+  };
+
+  const requests = cleanupExpiredPairingRequests();
+  requests.push(request);
+  savePairingRequests(requests);
+
+  res.json({
+    ok: true,
+    pairingCode,
+    displayCode: formatPairingCode(pairingCode),
+    expiresAt: request.expiresAt
+  });
+});
+
+app.get('/api/tv/pairing/status', (req, res) => {
+  const pairingCode = String(req.query.pairingCode || '').replace(/\D/g, '');
+  const requests = cleanupExpiredPairingRequests();
+  const request = requests.find(request => request.pairingCode === pairingCode);
+
+  if (!request) {
+    return res.status(404).json({
+      ok: false,
+      authorized: false,
+      error: 'Pairing request not found or expired'
+    });
+  }
+
+  if (request.deniedAt) {
+    return res.status(403).json({
+      ok: false,
+      authorized: false,
+      denied: true,
+      error: 'Pairing request denied'
+    });
+  }
+
+  if (!request.approvedAt) {
+    return res.json({
+      ok: true,
+      authorized: false,
+      pending: true,
+      expiresAt: request.expiresAt
+    });
+  }
+
+  const token = generateTvClientToken();
+  const client = {
+    id: generateTvClientId(),
+    name: request.name || 'Android TV Client',
+    tokenHash: hashPassword(token),
+    createdAt: new Date().toISOString(),
+    lastSeenAt: null,
+    pairingRequestId: request.id
+  };
+
+  const clients = loadTvClients();
+  clients.push(client);
+  saveTvClients(clients);
+
+  savePairingRequests(requests.filter(item => item.id !== request.id));
+
+  res.json({
+    ok: true,
+    authorized: true,
+    clientId: client.id,
+    clientName: client.name,
+    token
+  });
+});
+
+function authorizePairingRequestByCode(pairingCode) {
+  const cleanCode = String(pairingCode || '').replace(/\D/g, '');
+  const requests = cleanupExpiredPairingRequests();
+  const request = requests.find(request => request.pairingCode === cleanCode && !request.deniedAt);
+
+  if (!request) {
+    return false;
+  }
+
+  request.approvedAt = new Date().toISOString();
+  savePairingRequests(requests);
+  return true;
+}
+
+app.post('/api/tv/pairing/authorize-code', (req, res) => {
+  const ok = authorizePairingRequestByCode(req.body.pairingCode);
+
+  if (!ok) {
+    return res.status(404).send(renderPage(`
+      <div class="card">
+        <h2>Pairing Code Not Found</h2>
+        <p>The pairing code was not found, expired, or already used.</p>
+        <p><a href="/tv-clients" style="color:#93c5fd;">Return to TV Clients</a></p>
+      </div>
+    `));
+  }
+
+  res.redirect('/tv-clients');
+});
+
+app.post('/api/tv/pairing/:id/authorize', (req, res) => {
+  const requests = cleanupExpiredPairingRequests();
+  const request = requests.find(request => request.id === req.params.id && !request.deniedAt);
+
+  if (request) {
+    request.approvedAt = new Date().toISOString();
+    savePairingRequests(requests);
+  }
+
+  res.redirect('/tv-clients');
+});
+
+app.post('/api/tv/pairing/:id/deny', (req, res) => {
+  const requests = cleanupExpiredPairingRequests();
+  const request = requests.find(request => request.id === req.params.id);
+
+  if (request) {
+    request.deniedAt = new Date().toISOString();
+    savePairingRequests(requests);
+  }
+
+  res.redirect('/tv-clients');
+});
+
+app.post('/api/tv/clients/:id/revoke', (req, res) => {
+  const clients = loadTvClients();
+  const client = clients.find(client => client.id === req.params.id);
+
+  if (client) {
+    client.revokedAt = new Date().toISOString();
+    saveTvClients(clients);
+  }
+
+  res.redirect('/tv-clients');
+});
 
 
 app.get('/engine', async (req, res) => {
@@ -1470,6 +2202,14 @@ app.get('/api/health', (req, res) => {
     app: 'ScottiBYTE MultiView Server',
     version: '1.0.0',
     publicUrl: PUBLIC_URL,
+    auth: {
+      adminUserExists: hasAdminUser(),
+      loginRequired: hasAdminUser()
+    },
+    tvClients: {
+      authorizedCount: loadTvClients().filter(client => !client.revokedAt).length,
+      pendingCount: cleanupExpiredPairingRequests().filter(request => !request.approvedAt && !request.deniedAt).length
+    },
     timestamp: new Date().toISOString()
   });
 });

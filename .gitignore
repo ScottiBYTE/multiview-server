@@ -17,3 +17,6 @@ mediamtx/mediamtx.yml.before*
 # Local source backups
 src/server.js.*
 data/groups.json
+data/users.json
+data/tv-clients.json
+data/pairing-requests.json
