@@ -1319,7 +1319,7 @@ app.get('/api/tv/config', async (req, res) => {
     role: 'android-tv-camera-catalog',
     server: {
       name: 'ScottiBYTE MultiView Server',
-      version: '0.3.0',
+      version: '0.3.1',
       publicUrl: PUBLIC_URL
     },
     streamEngine: {
