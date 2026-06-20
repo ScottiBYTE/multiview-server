@@ -13,14 +13,15 @@ services:
     build: .
     working_dir: /app
     restart: unless-stopped
-    ports:
-      - "${MULTIVIEW_PORT:-8080}:8080"
+    network_mode: host
     environment:
       - NODE_ENV=production
       - PORT=8080
       - TZ=${TZ:-America/Chicago}
-      - MULTIVIEW_PUBLIC_URL=${MULTIVIEW_PUBLIC_URL:-http://localhost:8080}
+      - MULTIVIEW_PUBLIC_URL=${MULTIVIEW_PUBLIC_URL:-http://172.16.2.85:8080}
       - MULTIVIEW_DATA_DIR=/app/data
+      - MEDIAMTX_API_BASE=http://127.0.0.1:9997
+      - MEDIAMTX_HLS_BASE=http://172.16.2.85:8888
     volumes:
       - ./src:/app
       - ./data:/app/data

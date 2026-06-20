@@ -2,6 +2,8 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const http = require('http');
+const https = require('https');
 
 const app = express();
 
@@ -11,6 +13,8 @@ const DATA_DIR = process.env.MULTIVIEW_DATA_DIR || '/app/data';
 const CAMERAS_FILE = path.join(DATA_DIR, 'cameras.json');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
 const HLS_DIR = path.join(DATA_DIR, 'hls');
+const MEDIAMTX_HLS_BASE = process.env.MEDIAMTX_HLS_BASE || 'http://172.16.2.85:8888';
+const MEDIAMTX_API_BASE = process.env.MEDIAMTX_API_BASE || 'http://127.0.0.1:9997';
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -540,6 +544,7 @@ function renderPage(content) {
     <a href="/">Dashboard</a>
     <a href="/cameras">Cameras</a>
     <a href="/matrix">Matrix</a>
+    <a href="/engine">Stream Engine</a>
     <a href="/api/health">API Health</a>
   </nav>
 
@@ -550,6 +555,133 @@ function renderPage(content) {
 </html>
   `;
 }
+
+
+function fetchJson(url, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const client = parsed.protocol === 'https:' ? https : http;
+
+    const req = client.get(parsed, response => {
+      let body = '';
+
+      response.on('data', chunk => {
+        body += chunk.toString();
+        if (body.length > 5_000_000) {
+          req.destroy(new Error('Response too large'));
+        }
+      });
+
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          return reject(new Error(`HTTP ${response.statusCode}`));
+        }
+
+        try {
+          resolve(JSON.parse(body));
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Request timed out'));
+    });
+
+    req.on('error', reject);
+  });
+}
+
+function normalizeMediaMtxPaths(payload) {
+  if (!payload) return [];
+
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.paths)) return payload.paths;
+  if (Array.isArray(payload)) return payload;
+
+  return [];
+}
+
+async function getStreamEngineStatus() {
+  const cameras = loadCameras();
+
+  let mediamtxOk = false;
+  let mediamtxError = null;
+  let paths = [];
+
+  try {
+    const payload = await fetchJson(`${MEDIAMTX_API_BASE}/v3/paths/list`);
+    mediamtxOk = true;
+    paths = normalizeMediaMtxPaths(payload);
+  } catch (err) {
+    mediamtxError = err.message || String(err);
+  }
+
+  const pathMap = new Map();
+
+  for (const item of paths) {
+    const name = item.name || item.path || item.confName;
+    if (name) pathMap.set(name, item);
+  }
+
+  const cameraStatuses = cameras.map(camera => {
+    const mediaPath = pathMap.get(camera.id) || null;
+    const tracks2 = Array.isArray(mediaPath?.tracks2) ? mediaPath.tracks2 : [];
+    const tracks = Array.isArray(mediaPath?.tracks) ? mediaPath.tracks : [];
+
+    const videoTrack = tracks2.find(track => {
+      const codec = String(track.codec || '').toLowerCase();
+      return codec.includes('h264') || codec.includes('h265') || codec.includes('video');
+    }) || null;
+
+    const audioTrack = tracks2.find(track => {
+      const codec = String(track.codec || '').toLowerCase();
+      return codec.includes('audio') || codec.includes('aac') || codec.includes('opus');
+    }) || null;
+
+    const fallbackVideo = tracks.find(track => {
+      const codec = String(track || '').toLowerCase();
+      return codec.includes('h264') || codec.includes('h265') || codec.includes('video');
+    }) || '';
+
+    const fallbackAudio = tracks.find(track => {
+      const codec = String(track || '').toLowerCase();
+      return codec.includes('audio') || codec.includes('aac') || codec.includes('opus');
+    }) || '';
+
+    return {
+      id: camera.id,
+      name: camera.name,
+      group: camera.group || 'Default',
+      enabled: camera.enabled !== false,
+      hlsUrl: `${MEDIAMTX_HLS_BASE}/${encodeURIComponent(camera.id)}/index.m3u8`,
+      ready: Boolean(mediaPath?.ready),
+      readers: Number(mediaPath?.readers?.length || mediaPath?.readerCount || 0),
+      bytesReceived: Number(mediaPath?.bytesReceived || mediaPath?.inboundBytes || 0),
+      bytesSent: Number(mediaPath?.bytesSent || mediaPath?.outboundBytes || 0),
+      videoCodec: videoTrack?.codec || fallbackVideo || '',
+      audioCodec: audioTrack?.codec || fallbackAudio || '',
+      width: videoTrack?.codecProps?.width || '',
+      height: videoTrack?.codecProps?.height || '',
+      videoProfile: videoTrack?.codecProps?.profile || '',
+      videoLevel: videoTrack?.codecProps?.level || ''
+    };
+  });
+
+  return {
+    ok: true,
+    mediamtxOk,
+    mediamtxError,
+    mediamtxApiBase: MEDIAMTX_API_BASE,
+    mediamtxHlsBase: MEDIAMTX_HLS_BASE,
+    cameraCount: cameras.length,
+    readyCount: cameraStatuses.filter(camera => camera.ready).length,
+    cameras: cameraStatuses,
+    timestamp: new Date().toISOString()
+  };
+}
+
 
 app.get('/', (req, res) => {
   const cameras = loadCameras();
@@ -571,6 +703,89 @@ app.get('/', (req, res) => {
         <li>Camera credentials are not stored on the client</li>
         <li>Remote access is handled through the server URL</li>
       </ul>
+    </div>
+  `));
+});
+
+
+
+app.get('/engine', async (req, res) => {
+  const status = await getStreamEngineStatus();
+
+  const rows = status.cameras.map(camera => {
+    const readyPill = camera.ready
+      ? '<span class="pill" style="background:#14532d;color:#dcfce7;">Ready</span>'
+      : '<span class="pill" style="background:#7f1d1d;color:#fee2e2;">Not Ready</span>';
+
+    const resolution = camera.width && camera.height
+      ? `${escapeHtml(camera.width)}x${escapeHtml(camera.height)}`
+      : '<span class="muted">Unknown</span>';
+
+    const video = camera.videoCodec
+      ? `${escapeHtml(camera.videoCodec)}${camera.videoProfile ? ` ${escapeHtml(camera.videoProfile)}` : ''}${camera.videoLevel ? ` L${escapeHtml(camera.videoLevel)}` : ''}`
+      : '<span class="muted">Unknown</span>';
+
+    const audio = camera.audioCodec
+      ? escapeHtml(camera.audioCodec)
+      : '<span class="muted">None / Unknown</span>';
+
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(camera.name)}</strong><br>
+          <span class="muted">${escapeHtml(camera.id)}</span>
+        </td>
+        <td>${escapeHtml(camera.group)}</td>
+        <td>${readyPill}</td>
+        <td>${resolution}</td>
+        <td>${video}</td>
+        <td>${audio}</td>
+        <td>${camera.readers}</td>
+        <td><code>${escapeHtml(camera.hlsUrl)}</code></td>
+        <td style="white-space:nowrap;">
+          <a href="/live/${encodeURIComponent(camera.id)}" style="text-decoration:none;">
+            <button type="button">Open Live</button>
+          </a>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const engineStatus = status.mediamtxOk
+    ? `<span class="status">MediaMTX Online</span>`
+    : `<span class="pill" style="background:#7f1d1d;color:#fee2e2;">MediaMTX API Error</span>`;
+
+  res.send(renderPage(`
+    <div class="card">
+      <h2>Stream Engine</h2>
+      <p>${engineStatus}</p>
+      <p class="muted">Read-only view of the persistent MediaMTX stream engine.</p>
+      <p>Ready streams: <strong>${status.readyCount}</strong> / <strong>${status.cameraCount}</strong></p>
+      <p>MediaMTX API: <code>${escapeHtml(status.mediamtxApiBase)}</code></p>
+      <p>MediaMTX HLS: <code>${escapeHtml(status.mediamtxHlsBase)}</code></p>
+      ${status.mediamtxError ? `<p><strong>Error:</strong> <code>${escapeHtml(status.mediamtxError)}</code></p>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>Camera Stream Status</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Camera</th>
+            <th>Group</th>
+            <th>Status</th>
+            <th>Resolution</th>
+            <th>Video</th>
+            <th>Audio</th>
+            <th>Readers</th>
+            <th>HLS URL</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || '<tr><td colspan="9" class="muted">No cameras configured.</td></tr>'}
+        </tbody>
+      </table>
     </div>
   `));
 });
@@ -754,8 +969,7 @@ app.get('/live/:id', (req, res) => {
     `));
   }
 
-  const mediamtxBase = process.env.MEDIAMTX_HLS_BASE || 'http://172.16.2.85:8888';
-  const hlsUrl = `${mediamtxBase}/${encodeURIComponent(camera.id)}/index.m3u8`;
+  const hlsUrl = `${MEDIAMTX_HLS_BASE}/${encodeURIComponent(camera.id)}/index.m3u8`;
 
   res.send(renderPage(`
     <div class="card">
@@ -1043,6 +1257,11 @@ app.post('/api/cameras/:id/update', (req, res) => {
 
   saveCameras(cameras);
   res.redirect('/cameras');
+});
+
+
+app.get('/api/engine/status', async (req, res) => {
+  res.json(await getStreamEngineStatus());
 });
 
 app.get('/api/health', (req, res) => {
