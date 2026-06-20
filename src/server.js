@@ -17,6 +17,7 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const TV_CLIENTS_FILE = path.join(DATA_DIR, 'tv-clients.json');
 const PAIRING_REQUESTS_FILE = path.join(DATA_DIR, 'pairing-requests.json');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
+const PUBLIC_DIR = path.join(__dirname, 'public');
 const HLS_DIR = path.join(DATA_DIR, 'hls');
 const MEDIAMTX_HLS_BASE = process.env.MEDIAMTX_HLS_BASE || 'http://172.16.2.85:8888';
 const MEDIAMTX_API_BASE = process.env.MEDIAMTX_API_BASE || 'http://127.0.0.1:9997';
@@ -28,6 +29,7 @@ const sessions = new Map();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/thumbs', express.static(THUMBS_DIR));
+app.use(express.static(PUBLIC_DIR));
 app.use('/hls', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -364,6 +366,7 @@ function wantsJson(req) {
 
 function requireLogin(req, res, next) {
   const publicPaths = new Set([
+    '/favicon.png',
     '/login',
     '/setup',
     '/logout',
@@ -481,6 +484,8 @@ function renderPage(content, options = {}) {
 <html>
 <head>
   <title>ScottiBYTE MultiView Server</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="shortcut icon" type="image/png" href="/favicon.png">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {

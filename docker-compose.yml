@@ -24,5 +24,6 @@ services:
       - MEDIAMTX_HLS_BASE=${MEDIAMTX_HLS_BASE}
     volumes:
       - ./src:/app
+      - ./public:/app/public
       - ./data:/app/data
       - ./logs:/app/logs
