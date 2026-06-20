@@ -13,3 +13,6 @@ node_modules/
 docker-compose.yml.before*
 src/server.js.before*
 mediamtx/mediamtx.yml.before*
+
+# Local source backups
+src/server.js.*
