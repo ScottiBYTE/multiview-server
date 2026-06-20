@@ -696,12 +696,12 @@ app.get('/', (req, res) => {
 
     <div class="card">
       <h2>System Role</h2>
-      <p>The server handles LAN access to RTSP camera streams, stores camera credentials, performs any necessary conversion, and serves authenticated remote clients through Nginx Proxy Manager.</p>
+      <p>The server stores camera definitions, publishes RTSP cameras through MediaMTX, and provides web and Android TV clients with stable HLS stream URLs.</p>
       <ul>
-        <li>Local camera access stays server-side</li>
-        <li>Android TV client remains lightweight</li>
-        <li>Camera credentials are not stored on the client</li>
-        <li>Remote access is handled through the server URL</li>
+        <li>Camera credentials stay server-side</li>
+        <li>MediaMTX provides persistent HLS streams</li>
+        <li>Web and Android TV clients receive safe stream URLs</li>
+        <li>Remote access can be added externally through a reverse proxy or VPN</li>
       </ul>
     </div>
   `));
