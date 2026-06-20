@@ -1270,7 +1270,7 @@ app.get('/api/tv/config', async (req, res) => {
 
   const cameras = engine.cameras
     .filter(camera => camera.enabled !== false)
-    .map(camera => {
+    .map((camera, index) => {
       const resolution = camera.width && camera.height
         ? `${camera.width}x${camera.height}`
         : null;
@@ -1281,41 +1281,63 @@ app.get('/api/tv/config', async (req, res) => {
         group: camera.group || 'Default',
         enabled: camera.enabled !== false,
         ready: camera.ready,
-        hlsUrl: camera.hlsUrl,
-        liveUrl: `${PUBLIC_URL}/live/${encodeURIComponent(camera.id)}`,
-        thumbnailUrl: `${PUBLIC_URL}/thumbs/${encodeURIComponent(camera.id)}.jpg`,
-        resolution,
-        width: camera.width || null,
-        height: camera.height || null,
-        videoCodec: camera.videoCodec || null,
-        videoProfile: camera.videoProfile || null,
-        videoLevel: camera.videoLevel || null,
-        audioCodec: camera.audioCodec || null
+        sortOrder: index,
+        streams: {
+          hls: camera.hlsUrl,
+          livePage: `${PUBLIC_URL}/live/${encodeURIComponent(camera.id)}`
+        },
+        images: {
+          thumbnail: `${PUBLIC_URL}/thumbs/${encodeURIComponent(camera.id)}.jpg`
+        },
+        video: {
+          resolution,
+          width: camera.width || null,
+          height: camera.height || null,
+          codec: camera.videoCodec || null,
+          profile: camera.videoProfile || null,
+          level: camera.videoLevel || null
+        },
+        audio: {
+          codec: camera.audioCodec || null,
+          available: Boolean(camera.audioCodec)
+        }
       };
     });
 
   const groups = [...new Set(cameras.map(camera => camera.group || 'Default'))]
-    .sort((a, b) => a.localeCompare(b));
+    .sort((a, b) => a.localeCompare(b))
+    .map(name => ({
+      name,
+      purpose: 'camera-metadata',
+      cameraIds: cameras
+        .filter(camera => camera.group === name)
+        .map(camera => camera.id)
+    }));
 
   res.json({
     ok: true,
-    app: 'ScottiBYTE MultiView Server',
-    version: '0.2.0',
-    role: 'android-tv-config',
-    serverName: 'ScottiBYTE MultiView Server',
-    publicUrl: PUBLIC_URL,
-    hlsBaseUrl: MEDIAMTX_HLS_BASE,
-    mediamtxOnline: engine.mediamtxOk,
-    cameraCount: cameras.length,
-    readyCount: cameras.filter(camera => camera.ready).length,
-    defaultLayout: {
-      name: 'All Cameras',
-      type: 'grid',
-      columns: 'auto',
-      cameraIds: cameras.map(camera => camera.id)
+    role: 'android-tv-camera-catalog',
+    server: {
+      name: 'ScottiBYTE MultiView Server',
+      version: '0.3.0',
+      publicUrl: PUBLIC_URL
+    },
+    streamEngine: {
+      type: 'MediaMTX',
+      online: engine.mediamtxOk,
+      hlsBaseUrl: MEDIAMTX_HLS_BASE,
+      cameraCount: cameras.length,
+      readyCount: cameras.filter(camera => camera.ready).length
     },
     groups,
     cameras,
+    clientHints: {
+      layoutOwnership: 'client',
+      groupPurpose: 'metadata',
+      defaultSort: 'configured-order',
+      recommendedStartupView: 'last-used-or-all-cameras',
+      credentialsPolicy: 'server-side-only'
+    },
     timestamp: new Date().toISOString()
   });
 });
