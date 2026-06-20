@@ -477,6 +477,10 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;');
 }
 
+const APP_VERSION = 'v1.1.0';
+const GITHUB_VERSION_URL = 'https://github.com/ScottiBYTE/multiview-server/releases/tag/v1.1.0';
+const DONATE_URL = 'https://www.paypal.com/paypalme/ScottiBYTE';
+
 function renderPage(content, options = {}) {
   const hideNav = Boolean(options.hideNav);
   return `
@@ -487,6 +491,12 @@ function renderPage(content, options = {}) {
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="shortcut icon" type="image/png" href="/favicon.png">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    (function () {
+      const saved = localStorage.getItem('multiview-theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
   <style>
     :root {
       --bg: #0b111c;
@@ -499,6 +509,33 @@ function renderPage(content, options = {}) {
       --good: #16a34a;
       --bad: #dc2626;
       --warn: #f59e0b;
+      --header-bg: linear-gradient(90deg, #0f172a, #1e293b);
+      --nav-bg: #0f172a;
+      --nav-pill: #1e293b;
+      --input-bg: #0f172a;
+      --table-head-bg: #0f172a;
+      --empty-bg: rgba(255,255,255,.02);
+      --shadow: rgba(0,0,0,.28);
+    }
+
+    :root[data-theme="light"] {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --panel2: #f1f5f9;
+      --border: #cbd5e1;
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #2563eb;
+      --good: #15803d;
+      --bad: #b91c1c;
+      --warn: #b45309;
+      --header-bg: linear-gradient(90deg, #e0f2fe, #dbeafe);
+      --nav-bg: #e2e8f0;
+      --nav-pill: #ffffff;
+      --input-bg: #ffffff;
+      --table-head-bg: #e2e8f0;
+      --empty-bg: rgba(15,23,42,.035);
+      --shadow: rgba(15,23,42,.12);
     }
 
     * {
@@ -514,7 +551,7 @@ function renderPage(content, options = {}) {
 
     header {
       padding: 24px 32px;
-      background: linear-gradient(90deg, #0f172a, #1e293b);
+      background: var(--header-bg);
       border-bottom: 1px solid var(--border);
     }
 
@@ -528,18 +565,60 @@ function renderPage(content, options = {}) {
       margin-top: 6px;
     }
 
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .header-actions a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    .header-actions a:hover {
+      text-decoration: underline;
+    }
+
+    .theme-toggle {
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: #2563eb;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    :root[data-theme="light"] .theme-toggle {
+      background: #2563eb;
+      color: white;
+    }
+
     nav {
       display: flex;
       gap: 10px;
       padding: 14px 32px;
-      background: #0f172a;
+      background: var(--nav-bg);
       border-bottom: 1px solid var(--border);
     }
 
     nav a {
       color: var(--text);
       text-decoration: none;
-      background: #1e293b;
+      background: var(--nav-pill);
       border: 1px solid var(--border);
       padding: 9px 13px;
       border-radius: 10px;
@@ -562,7 +641,7 @@ function renderPage(content, options = {}) {
       border-radius: 14px;
       padding: 22px;
       margin-bottom: 22px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.28);
+      box-shadow: 0 10px 30px var(--shadow);
     }
 
     .status {
@@ -595,7 +674,7 @@ function renderPage(content, options = {}) {
       padding: 11px;
       border-radius: 10px;
       border: 1px solid var(--border);
-      background: #0f172a;
+      background: var(--input-bg);
       color: var(--text);
       font-size: 15px;
     }
@@ -640,7 +719,7 @@ function renderPage(content, options = {}) {
 
     th {
       color: #cbd5e1;
-      background: #0f172a;
+      background: var(--table-head-bg);
     }
 
     tr:last-child td {
@@ -651,7 +730,7 @@ function renderPage(content, options = {}) {
       display: inline-block;
       padding: 5px 9px;
       border-radius: 999px;
-      background: #1e293b;
+      background: var(--nav-pill);
       border: 1px solid var(--border);
       color: #cbd5e1;
       font-size: 12px;
@@ -663,7 +742,7 @@ function renderPage(content, options = {}) {
       border: 1px dashed var(--border);
       border-radius: 12px;
       color: var(--muted);
-      background: rgba(255,255,255,.02);
+      background: var(--empty-bg);
     }
 
 
@@ -683,7 +762,7 @@ function renderPage(content, options = {}) {
       grid-template-columns: 150px 190px 120px minmax(520px, 1fr) 130px 430px;
       gap: 12px;
       align-items: center;
-      background: #0f172a;
+      background: var(--table-head-bg);
       border: 1px solid var(--border);
       border-bottom: 0;
       border-radius: 12px 12px 0 0;
@@ -766,6 +845,14 @@ function renderPage(content, options = {}) {
         padding: 20px;
       }
 
+      .topbar {
+        flex-direction: column;
+      }
+
+      .header-actions {
+        justify-content: flex-start;
+      }
+
       nav {
         padding: 12px 18px;
         flex-wrap: wrap;
@@ -780,12 +867,72 @@ function renderPage(content, options = {}) {
         overflow-x: auto;
       }
     }
-  </style>
+  
+
+/* ScottiBYTE light theme contrast refinements */
+:root[data-theme="light"] code {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+:root[data-theme="light"] label {
+  color: #334155;
+}
+
+:root[data-theme="light"] th {
+  color: #334155;
+  background: var(--table-head-bg);
+}
+
+:root[data-theme="light"] .camera-list-header {
+  color: #334155;
+  background: var(--table-head-bg);
+  box-shadow: 0 2px 8px rgba(15,23,42,.14);
+}
+
+:root[data-theme="light"] .camera-list-header a {
+  color: #334155;
+  border-bottom-color: #64748b;
+}
+
+:root[data-theme="light"] .camera-list-header a:hover {
+  color: #1d4ed8;
+  border-bottom-color: #1d4ed8;
+}
+
+:root[data-theme="light"] .camera-list-header a::after {
+  color: #64748b;
+}
+
+:root[data-theme="light"] .camera-list-header a:hover::after {
+  color: #1d4ed8;
+}
+
+:root[data-theme="light"] .pill {
+  color: #334155;
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+:root[data-theme="light"] .muted {
+  color: #475569;
+}
+
+</style>
 </head>
 <body>
   <header>
-    <h1>ScottiBYTE MultiView Server</h1>
-    <div class="subtitle">Self-hosted camera gateway for lightweight Android TV and remote clients</div>
+    <div class="topbar">
+      <div>
+        <h1>ScottiBYTE MultiView Server</h1>
+        <div class="subtitle">Self-hosted camera gateway for lightweight Android TV and remote clients</div>
+      </div>
+      <div class="header-actions">
+        <a href="${GITHUB_VERSION_URL}" target="_blank" rel="noopener noreferrer">GitHub ${APP_VERSION}</a>
+        <a href="${DONATE_URL}" target="_blank" rel="noopener noreferrer">❤ Donate</a>
+        <button class="theme-toggle" type="button" onclick="toggleTheme()">☀ Light</button>
+      </div>
+    </div>
   </header>
 
   ${hideNav ? '' : `
@@ -804,6 +951,23 @@ function renderPage(content, options = {}) {
   <main>
     ${content}
   </main>
+  <script>
+    function setTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('multiview-theme', theme);
+      const button = document.querySelector('.theme-toggle');
+      if (button) {
+        button.textContent = theme === 'light' ? '🌙 Dark' : '☀ Light';
+      }
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      setTheme(current === 'light' ? 'dark' : 'light');
+    }
+
+    setTheme(localStorage.getItem('multiview-theme') || 'dark');
+  </script>
 </body>
 </html>
   `;
