@@ -121,198 +121,6 @@ function safeId(name) {
 
 
 
-const liveProcesses = new Map();
-
-function stopOtherLiveStreams(activeCameraId) {
-  for (const [cameraId, entry] of liveProcesses.entries()) {
-    if (cameraId === activeCameraId) continue;
-
-    try {
-      entry.process.kill('SIGTERM');
-    } catch (err) {}
-
-    liveProcesses.delete(cameraId);
-  }
-}
-
-function cleanOtherHlsDirs(activeCameraId) {
-  ensureDataFiles();
-
-  if (!fs.existsSync(HLS_DIR)) return;
-
-  for (const name of fs.readdirSync(HLS_DIR)) {
-    if (name === activeCameraId) continue;
-
-    const fullPath = path.join(HLS_DIR, name);
-    try {
-      fs.rmSync(fullPath, { recursive: true, force: true });
-    } catch (err) {}
-  }
-}
-
-function getLiveStatus(cameraId) {
-  const entry = liveProcesses.get(cameraId);
-  if (!entry) return { running: false };
-
-  if (entry.process.exitCode !== null) {
-    liveProcesses.delete(cameraId);
-    return { running: false };
-  }
-
-  return {
-    running: true,
-    startedAt: entry.startedAt,
-    hlsUrl: `/hls/${cameraId}/index.m3u8`
-  };
-}
-
-function startLiveStream(camera) {
-  ensureDataFiles();
-
-  stopOtherLiveStreams(camera.id);
-  cleanOtherHlsDirs(camera.id);
-
-  const existing = getLiveStatus(camera.id);
-  if (existing.running) {
-    return existing;
-  }
-
-  const cameraHlsDir = path.join(HLS_DIR, camera.id);
-  fs.rmSync(cameraHlsDir, { recursive: true, force: true });
-  fs.mkdirSync(cameraHlsDir, { recursive: true });
-
-  const indexPath = path.join(cameraHlsDir, 'index.m3u8');
-  const sessionId = Date.now().toString(36);
-
-  const liveProfile = camera.liveProfile || 'copy';
-
-  const videoArgs = liveProfile === 'transcode720'
-    ? [
-        '-map', '0:v:0',
-        '-vf', 'scale=-2:720',
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-tune', 'zerolatency',
-        '-b:v', '3000k',
-        '-maxrate', '4000k',
-        '-bufsize', '7000k',
-        '-g', '60',
-        '-keyint_min', '60',
-        '-sc_threshold', '0'
-      ]
-    : liveProfile === 'transcode1080'
-      ? [
-          '-map', '0:v:0',
-          '-vf', 'scale=-2:1080',
-          '-c:v', 'libx264',
-          '-preset', 'veryfast',
-          '-tune', 'zerolatency',
-          '-b:v', '5000k',
-          '-maxrate', '7000k',
-          '-bufsize', '10000k',
-          '-g', '60',
-          '-keyint_min', '60',
-          '-sc_threshold', '0'
-        ]
-      : [
-          '-map', '0:v:0',
-          '-c:v', 'copy'
-        ];
-
-  const args = [
-    '-hide_banner',
-    '-loglevel', 'warning',
-    '-rtsp_transport', 'tcp',
-    '-timeout', '8000000',
-    '-i', camera.rtspUrl,
-    ...videoArgs,
-    '-map', '0:a:0?',
-    '-c:a', 'aac',
-    '-ac', '1',
-    '-ar', '48000',
-    '-b:a', '64k',
-    '-f', 'hls',
-    '-hls_time', '2',
-    '-hls_list_size', '6',
-    '-hls_flags', 'delete_segments+append_list+omit_endlist',
-    '-hls_segment_filename', path.join(cameraHlsDir, `segment_${sessionId}_%05d.ts`),
-    indexPath
-  ];
-
-  const ff = spawn('ffmpeg', args);
-
-  let stderr = '';
-  ff.stderr.on('data', data => {
-    stderr += data.toString();
-    if (stderr.length > 20000) stderr = stderr.slice(-20000);
-  });
-
-  ff.on('close', code => {
-    const entry = liveProcesses.get(camera.id);
-    if (entry && entry.process === ff) {
-      entry.exitedAt = new Date().toISOString();
-      entry.exitCode = code;
-      entry.lastError = stderr;
-      liveProcesses.delete(camera.id);
-    }
-  });
-
-  const entry = {
-    process: ff,
-    startedAt: new Date().toISOString(),
-    hlsUrl: `/hls/${camera.id}/index.m3u8`,
-    lastError: () => stderr
-  };
-
-  liveProcesses.set(camera.id, entry);
-
-  return {
-    running: true,
-    startedAt: entry.startedAt,
-    hlsUrl: entry.hlsUrl
-  };
-}
-
-function stopLiveStream(cameraId) {
-  const entry = liveProcesses.get(cameraId);
-  if (!entry) return false;
-
-  entry.process.kill('SIGTERM');
-  liveProcesses.delete(cameraId);
-  return true;
-}
-
-function getHlsReadiness(cameraId) {
-  const cameraHlsDir = path.join(HLS_DIR, cameraId);
-  const indexPath = path.join(cameraHlsDir, 'index.m3u8');
-  const sessionId = Date.now().toString(36);
-
-  const playlistExists = fs.existsSync(indexPath);
-  let segmentCount = 0;
-  let playlist = '';
-
-  if (fs.existsSync(cameraHlsDir)) {
-    segmentCount = fs.readdirSync(cameraHlsDir).filter(name => name.endsWith('.ts')).length;
-  }
-
-  if (playlistExists) {
-    try {
-      playlist = fs.readFileSync(indexPath, 'utf8');
-    } catch {
-      playlist = '';
-    }
-  }
-
-  return {
-    ready: playlistExists && segmentCount >= 5,
-    playlistExists,
-    segmentCount,
-    hlsUrl: `/hls/${cameraId}/index.m3u8`,
-    playlistUpdatedAt: playlistExists ? fs.statSync(indexPath).mtime.toISOString() : null,
-    playlistPreview: playlist.slice(0, 500)
-  };
-}
-
 function captureThumbnail(camera) {
   return new Promise((resolve) => {
     ensureDataFiles();
@@ -1265,25 +1073,20 @@ app.get('/live/:id', (req, res) => {
       <video id="video" controls autoplay muted playsinline style="width:100%;max-width:1100px;background:#000;border-radius:14px;border:1px solid var(--border);"></video>
 
       <div style="margin-top:16px;display:flex;gap:10px;align-items:center;">
-        <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/live/start">
-          <button type="submit">Restart Stream</button>
-        </form>
-        <form method="post" action="/api/cameras/${encodeURIComponent(camera.id)}/live/stop">
-          <button class="danger" type="submit">Stop Stream</button>
-        </form>
-        <a href="/matrix" style="color:#93c5fd;">Back to Matrix</a>
+        <a href="/cameras" style="color:#93c5fd;">Back to Cameras</a>
+        <a href="/matrix" style="color:#93c5fd;">Matrix</a>
+        <a href="/engine" style="color:#93c5fd;">Stream Engine</a>
       </div>
 
       <p class="muted">HLS URL: <code>${escapeHtml(hlsUrl)}</code></p>
     </div>
 
-    <div id="streamStatus" class="muted" style="margin-top:12px;">Preparing stream...</div>
+    <div id="streamStatus" class="muted" style="margin-top:12px;">Opening MediaMTX HLS stream...</div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
       const video = document.getElementById('video');
       const hlsUrl = ${JSON.stringify(hlsUrl)};
-      const readyUrl = '/api/cameras/${encodeURIComponent(camera.id)}/live/ready';
       const statusEl = document.getElementById('streamStatus');
 
       let hls = null;
@@ -1372,7 +1175,7 @@ app.get('/live/:id', (req, res) => {
 
       function retryPlayerSoon() {
         if (retryCount >= 5) {
-          statusEl.textContent = 'Stream is ready, but the browser player did not start. Press Restart Stream.';
+          statusEl.textContent = 'MediaMTX stream is available, but the browser player did not start. Refresh the page or check Stream Engine.';
           return;
         }
 
@@ -1393,51 +1196,6 @@ app.get('/live/:id', (req, res) => {
       waitForStreamReady();
     </script>
   `));
-});
-
-app.post('/api/cameras/:id/live/start', (req, res) => {
-  const cameras = loadCameras();
-  const camera = cameras.find(camera => camera.id === req.params.id);
-
-  if (!camera) {
-    return res.status(404).json({ ok: false, error: 'Camera not found.' });
-  }
-
-  stopLiveStream(camera.id);
-  const status = startLiveStream(camera);
-
-  if (req.headers.accept && req.headers.accept.includes('text/html')) {
-    return res.redirect(`/live/${encodeURIComponent(camera.id)}`);
-  }
-
-  res.json({ ok: true, ...status });
-});
-
-app.post('/api/cameras/:id/live/stop', (req, res) => {
-  const stopped = stopLiveStream(req.params.id);
-
-  if (req.headers.accept && req.headers.accept.includes('text/html')) {
-    return res.redirect('/matrix');
-  }
-
-  res.json({ ok: true, stopped });
-});
-
-app.get('/api/cameras/:id/live/ready', (req, res) => {
-  res.json({
-    ok: true,
-    cameraId: req.params.id,
-    ...getLiveStatus(req.params.id),
-    ...getHlsReadiness(req.params.id)
-  });
-});
-
-app.get('/api/cameras/:id/live/status', (req, res) => {
-  res.json({
-    ok: true,
-    cameraId: req.params.id,
-    ...getLiveStatus(req.params.id)
-  });
 });
 
 app.get('/cameras/:id/edit', (req, res) => {
@@ -1604,7 +1362,7 @@ app.get('/api/tv/config', async (req, res) => {
     role: 'android-tv-camera-catalog',
     server: {
       name: 'ScottiBYTE MultiView Server',
-      version: '0.3.1',
+      version: '1.0.0',
       publicUrl: PUBLIC_URL
     },
     streamEngine: {
@@ -1619,7 +1377,7 @@ app.get('/api/tv/config', async (req, res) => {
     clientHints: {
       layoutOwnership: 'client',
       groupPurpose: 'metadata',
-      defaultSort: 'configured-order',
+      defaultSort: 'name',
       recommendedStartupView: 'last-used-or-all-cameras',
       credentialsPolicy: 'server-side-only'
     },
@@ -1710,7 +1468,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     app: 'ScottiBYTE MultiView Server',
-    version: '0.3.1',
+    version: '1.0.0',
     publicUrl: PUBLIC_URL,
     timestamp: new Date().toISOString()
   });
