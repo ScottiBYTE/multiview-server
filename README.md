@@ -205,9 +205,7 @@ For best results, keep camera RTSP streams and MediaMTX HLS endpoints on a trust
 
 ## Related Project
 
-ScottiBYTE MultiView Android TV / Fire TV Client:
-
-    https://github.com/ScottiBYTE/multiview-tv-client
+- ScottiBYTE MultiView Android TV / Fire TV Client: https://github.com/ScottiBYTE/multiview-android-tv
 
 ## License
 
