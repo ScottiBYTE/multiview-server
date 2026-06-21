@@ -1,22 +1,49 @@
-# Secrets / local runtime data
-.env
-data/cameras.json
-data/hls/
-data/thumbs/
-logs/
+# Dependencies
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Backups / generated files
-*.before*
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+logs/
+tmp/
+*.log
+*.tmp
 *.bak
-*.tar.gz
-docker-compose.yml.before*
-src/server.js.before*
-mediamtx/mediamtx.yml.before*
 
-# Local source backups
-src/server.js.*
-data/groups.json
-data/users.json
-data/tv-clients.json
-data/pairing-requests.json
+# Local troubleshooting / pasted output
+Pasted*
+*pasted*
+*smoke*
+*results*
+*.local
+*.private
+
+# Generated camera media
+public/thumbs/*.jpg
+public/thumbs/*.jpeg
+public/thumbs/*.png
+public/thumbs/*.tmp*
+public/thumbnails/*.jpg
+public/thumbnails/*.jpeg
+public/thumbnails/*.png
+public/thumbnails/*.tmp*
+
+# Local backups
+*.before-*
+*.camera-registry-*
+server.js.before-*
+server.js.camera-registry-*
+docker-compose.yml.before-*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
