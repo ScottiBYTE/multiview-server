@@ -188,9 +188,9 @@ ScottiBYTE MultiView Android TV / Fire TV Client:
 
 MIT License
 
-# 🌐 Community
+## 🌐 Community
 
-## Community Support
+### Community Support
 
 Need help with ScottiBYTE MultiView Server, the Android TV / Fire TV client, Docker deployment, MediaMTX, camera configuration, TV client pairing, or other ScottiBYTE utilities?
 
