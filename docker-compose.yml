@@ -9,9 +9,10 @@ services:
       - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
 
   multiview-server:
+    image: scottibyte/multiview-server:latest
+    # For local development, comment the image line above and uncomment:
+    # build: .
     container_name: multiview-server
-    build: .
-    working_dir: /app
     restart: unless-stopped
     network_mode: host
     environment:
@@ -23,7 +24,5 @@ services:
       - MEDIAMTX_API_BASE=${MEDIAMTX_API_BASE}
       - MEDIAMTX_HLS_BASE=${MEDIAMTX_HLS_BASE}
     volumes:
-      - ./src:/app
-      - ./public:/app/public
       - ./data:/app/data
       - ./logs:/app/logs

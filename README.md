@@ -69,7 +69,7 @@ The TV client does not need camera usernames or passwords. It pairs with the ser
 
 ## Quick Start
 
-Clone the repository:
+Clone the repository for the Docker Compose file, MediaMTX configuration, and example environment file:
 
     git clone https://github.com/ScottiBYTE/multiview-server.git
     cd multiview-server
@@ -83,11 +83,36 @@ Start the server stack:
 
     docker compose up -d
 
+The default Compose file uses the published Docker Hub image:
+
+    scottibyte/multiview-server:latest
+
 Open the web UI:
 
     http://SERVER-IP:8080
 
 On first launch, create the administrator account, then use the web interface to add cameras, groups, and TV clients.
+
+## Docker Image
+
+Pull the current image:
+
+    docker pull scottibyte/multiview-server:latest
+
+Specific version:
+
+    docker pull scottibyte/multiview-server:1.1.0
+
+## Local Development Build
+
+For local development, edit docker-compose.yml, comment the image line, and uncomment:
+
+    build: .
+
+Then rebuild:
+
+    docker compose build --no-cache multiview-server
+    docker compose up -d
 
 ## Example .env
 
