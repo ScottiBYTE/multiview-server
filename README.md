@@ -101,7 +101,7 @@ Pull the current image:
 
 Specific version:
 
-    docker pull scottibyte/multiview-server:1.1.0
+    docker pull scottibyte/multiview-server:1.2.0
 
 ## Local Development Build
 

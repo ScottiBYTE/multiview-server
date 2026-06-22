@@ -650,8 +650,8 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;');
 }
 
-const APP_VERSION = 'v1.1.0';
-const GITHUB_VERSION_URL = 'https://github.com/ScottiBYTE/multiview-server/releases/tag/v1.1.0';
+const APP_VERSION = 'v1.2.0';
+const GITHUB_VERSION_URL = 'https://github.com/ScottiBYTE/multiview-server/releases/tag/v1.2.0';
 const DONATE_URL = 'https://www.paypal.com/paypalme/ScottiBYTE';
 
 function renderPage(content, options = {}) {
