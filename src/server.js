@@ -468,6 +468,179 @@ function captureThumbnail(camera) {
 }
 
 
+// Container-managed FFmpeg publishers.
+// These replace the old host-side systemd publisher services for Docker installs.
+const publishers = new Map();
+
+function isPublisherCameraEnabled(camera) {
+  return Boolean(camera && camera.enabled !== false && camera.rtspUrl && camera.id);
+}
+
+function buildPublisherArgs(camera) {
+  const camId = camera.id;
+  const rtspUrl = camera.rtspUrl;
+  const liveProfile = camera.liveProfile || 'copy';
+  const rtspLower = String(rtspUrl || '').toLowerCase();
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'warning',
+    '-rtsp_transport', 'tcp',
+    '-i', rtspUrl,
+    '-map', '0:v:0'
+  ];
+
+  const shouldTranscode =
+    liveProfile === 'transcode720' ||
+    liveProfile === 'transcode1080' ||
+    rtspLower.includes('h265') ||
+    rtspLower.includes('hevc');
+
+  if (shouldTranscode) {
+    const height = liveProfile === 'transcode1080' ? '1080' : '720';
+    const bitrate = liveProfile === 'transcode1080' ? '5000k' : '3000k';
+    const maxrate = liveProfile === 'transcode1080' ? '6500k' : '4000k';
+    const bufsize = liveProfile === 'transcode1080' ? '10000k' : '7000k';
+
+    args.push(
+      '-vf', `scale=-2:${height}`,
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-tune', 'zerolatency',
+      '-b:v', bitrate,
+      '-maxrate', maxrate,
+      '-bufsize', bufsize,
+      '-g', '60',
+      '-keyint_min', '60',
+      '-sc_threshold', '0'
+    );
+  } else {
+    args.push('-c:v', 'copy');
+  }
+
+  if (camera.audioEnabled === false) {
+    args.push('-an');
+  } else {
+    args.push(
+      '-map', '0:a:0?',
+      '-c:a', 'aac',
+      '-ac', '1',
+      '-ar', '48000',
+      '-b:a', '64k'
+    );
+  }
+
+  args.push(
+    '-f', 'rtsp',
+    '-rtsp_transport', 'tcp',
+    `rtsp://127.0.0.1:8554/${camId}`
+  );
+
+  return args;
+}
+
+function stopPublisher(cameraId) {
+  const entry = publishers.get(cameraId);
+  if (!entry) return;
+
+  entry.stopping = true;
+  publishers.delete(cameraId);
+
+  try {
+    entry.process.kill('SIGTERM');
+  } catch (err) {
+    console.warn(`Failed to stop publisher for ${cameraId}:`, err.message || err);
+  }
+
+  setTimeout(() => {
+    try {
+      if (!entry.process.killed) entry.process.kill('SIGKILL');
+    } catch (_) {}
+  }, 5000);
+}
+
+function startPublisher(camera) {
+  if (!isPublisherCameraEnabled(camera)) return;
+
+  stopPublisher(camera.id);
+
+  const args = buildPublisherArgs(camera);
+  console.log(`Starting publisher for ${camera.id}: ffmpeg ${args.join(' ')}`);
+
+  const ff = spawn('ffmpeg', args, {
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+
+  const entry = {
+    cameraId: camera.id,
+    cameraName: camera.name || camera.id,
+    args,
+    process: ff,
+    startedAt: new Date().toISOString(),
+    stopping: false,
+    lastError: ''
+  };
+
+  publishers.set(camera.id, entry);
+
+  ff.stderr.on('data', data => {
+    const text = data.toString().trim();
+    if (text) entry.lastError = text.slice(-2000);
+  });
+
+  ff.on('exit', (code, signal) => {
+    const current = publishers.get(camera.id);
+    if (current !== entry) return;
+
+    publishers.delete(camera.id);
+
+    console.warn(`Publisher for ${camera.id} exited: code=${code} signal=${signal}`);
+
+    if (!entry.stopping) {
+      setTimeout(() => {
+        const latest = loadCameras().find(cam => cam.id === camera.id);
+        if (isPublisherCameraEnabled(latest)) {
+          startPublisher(latest);
+        }
+      }, 5000);
+    }
+  });
+}
+
+function restartPublisher(camera) {
+  stopPublisher(camera.id);
+  if (isPublisherCameraEnabled(camera)) {
+    startPublisher(camera);
+  }
+}
+
+function startAllEnabledPublishers() {
+  const cameras = loadCameras();
+  for (const camera of cameras) {
+    if (isPublisherCameraEnabled(camera)) {
+      startPublisher(camera);
+    }
+  }
+}
+
+function stopAllPublishers() {
+  for (const cameraId of [...publishers.keys()]) {
+    stopPublisher(cameraId);
+  }
+}
+
+process.on('SIGINT', () => {
+  stopAllPublishers();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  stopAllPublishers();
+  process.exit(0);
+});
+
+
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -2201,6 +2374,7 @@ app.post('/api/cameras/:id/update', (req, res) => {
   camera.updatedAt = new Date().toISOString();
 
   saveCameras(cameras);
+  restartPublisher(camera);
   res.redirect('/cameras');
 });
 
@@ -2402,7 +2576,7 @@ app.post('/api/cameras', (req, res) => {
     id = `${id}-${Date.now()}`;
   }
 
-  cameras.push({
+  const camera = {
     id,
     name,
     type: req.body.type || 'rtsp',
@@ -2414,9 +2588,12 @@ app.post('/api/cameras', (req, res) => {
     lastTest: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
-  });
+  };
+
+  cameras.push(camera);
 
   saveCameras(cameras);
+  restartPublisher(camera);
   res.redirect('/cameras');
 });
 
@@ -2453,6 +2630,7 @@ app.post('/api/cameras/:id/delete', (req, res) => {
   const next = cameras.filter(camera => camera.id !== req.params.id);
 
   saveCameras(next);
+  stopPublisher(req.params.id);
   res.redirect('/cameras');
 });
 
@@ -2460,4 +2638,9 @@ ensureDataFiles();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`ScottiBYTE MultiView Server listening on port ${PORT}`);
+
+  setTimeout(() => {
+    console.log('Starting enabled camera publishers...');
+    startAllEnabledPublishers();
+  }, 3000);
 });
