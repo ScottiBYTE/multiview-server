@@ -9,6 +9,11 @@ Dockerfile.before-*
 *.tar.gz
 *.zip
 
+data/
+logs/
+mediamtx/
+node_modules/
+
 src/server.js.before-*
 src/server.js.*-20*
 src/server.js.camera-registry-*
