@@ -330,7 +330,7 @@ function requireTvClientAuth(req, res, next) {
   if (!suppliedToken) {
     return res.status(401).json({
       ok: false,
-      error: 'TV client token required'
+      error: 'Remote client token required'
     });
   }
 
@@ -342,7 +342,7 @@ function requireTvClientAuth(req, res, next) {
   if (!client) {
     return res.status(401).json({
       ok: false,
-      error: 'Invalid TV client token'
+      error: 'Invalid Remote client token'
     });
   }
 
@@ -650,8 +650,8 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;');
 }
 
-const APP_VERSION = 'v1.2.0';
-const GITHUB_VERSION_URL = 'https://github.com/ScottiBYTE/multiview-server/releases/tag/v1.2.0';
+const APP_VERSION = 'v1.3.0';
+const GITHUB_VERSION_URL = 'https://github.com/ScottiBYTE/multiview-server/releases/tag/v1.3.0';
 const DONATE_URL = 'https://www.paypal.com/paypalme/ScottiBYTE';
 
 function renderPage(content, options = {}) {
@@ -1098,7 +1098,7 @@ function renderPage(content, options = {}) {
     <div class="topbar">
       <div>
         <h1>ScottiBYTE MultiView Server</h1>
-        <div class="subtitle">Self-hosted camera gateway for lightweight Android TV and remote clients</div>
+        <div class="subtitle">Self-hosted camera gateway for secure remote camera viewing.</div>
       </div>
       <div class="header-actions">
         <a href="${GITHUB_VERSION_URL}" target="_blank" rel="noopener noreferrer">GitHub ${APP_VERSION}</a>
@@ -1115,7 +1115,7 @@ function renderPage(content, options = {}) {
     <a href="/groups">Groups</a>
     <a href="/matrix">Matrix</a>
     <a href="/engine">Stream Engine</a>
-    <a href="/tv-clients">TV Clients</a>
+    <a href="/tv-clients">Remote Clients</a>
     <a href="/api/health">API Health</a>
     <a href="/logout">Logout</a>
   </nav>
@@ -1132,6 +1132,13 @@ function renderPage(content, options = {}) {
       if (button) {
         button.textContent = theme === 'light' ? '🌙 Dark' : '☀ Light';
       }
+    }
+
+
+    function toggleRename(id) {
+      const form = document.getElementById('rename-' + id);
+      if (!form) return;
+      form.style.display = form.style.display === 'none' ? 'flex' : 'none';
     }
 
     function toggleTheme() {
@@ -1433,11 +1440,11 @@ app.get('/', (req, res) => {
 
     <div class="card">
       <h2>System Role</h2>
-      <p>The server stores camera definitions, publishes RTSP cameras through MediaMTX, and provides web and Android TV clients with stable HLS stream URLs.</p>
+      <p>The server stores camera definitions, publishes RTSP cameras through MediaMTX, and provides web and remote clients with stable HLS stream URLs.</p>
       <ul>
         <li>Camera credentials stay server-side</li>
         <li>MediaMTX provides persistent HLS streams</li>
-        <li>Web and Android TV clients receive safe stream URLs</li>
+        <li>Web and remote clients receive safe stream URLs</li>
         <li>Remote access can be added externally through a reverse proxy or VPN</li>
       </ul>
     </div>
@@ -1456,7 +1463,7 @@ app.get('/tv-clients', (req, res) => {
     .map(request => {
       return `
         <tr>
-          <td><strong>${escapeHtml(request.name || 'Android TV Client')}</strong><br><span class="muted">${escapeHtml(request.id)}</span></td>
+          <td><strong>${escapeHtml(request.name || 'Remote Client')}</strong><br><span class="muted">${escapeHtml(request.id)}</span></td>
           <td><code>${escapeHtml(formatPairingCode(request.pairingCode))}</code></td>
           <td>${escapeHtml(request.createdAt || '')}</td>
           <td>${escapeHtml(request.expiresAt || '')}</td>
@@ -1464,8 +1471,8 @@ app.get('/tv-clients', (req, res) => {
             <form method="post" action="/api/tv/pairing/${encodeURIComponent(request.id)}/authorize" style="display:inline-block;margin-right:8px;">
               <button type="submit">Authorize</button>
             </form>
-            <form method="post" action="/api/tv/pairing/${encodeURIComponent(request.id)}/deny" style="display:inline-block;">
-              <button class="danger" type="submit">Deny</button>
+            <form method="post" action="/api/tv/pairing/${encodeURIComponent(request.id)}/delete" style="display:inline-block;">
+              <button class="danger" type="submit">Delete</button>
             </form>
           </td>
         </tr>
@@ -1477,11 +1484,16 @@ app.get('/tv-clients', (req, res) => {
     .map(request => {
       return `
         <tr>
-          <td><strong>${escapeHtml(request.name || 'Android TV Client')}</strong><br><span class="muted">${escapeHtml(request.id)}</span></td>
+          <td><strong>${escapeHtml(request.name || 'Remote Client')}</strong><br><span class="muted">${escapeHtml(request.id)}</span></td>
           <td><code>${escapeHtml(formatPairingCode(request.pairingCode))}</code></td>
           <td>${escapeHtml(request.approvedAt || '')}</td>
           <td>${escapeHtml(request.expiresAt || '')}</td>
-          <td><span class="pill">Waiting for client</span></td>
+          <td style="white-space:nowrap;">
+            <span class="pill" style="margin-right:8px;">Waiting for client</span>
+            <form method="post" action="/api/tv/pairing/${encodeURIComponent(request.id)}/delete" style="display:inline-block;">
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </td>
         </tr>
       `;
     }).join('');
@@ -1489,7 +1501,20 @@ app.get('/tv-clients', (req, res) => {
   const clientRows = tvClients.map(client => {
     return `
       <tr>
-        <td><strong>${escapeHtml(client.name || 'Android TV Client')}</strong><br><span class="muted">${escapeHtml(client.id)}</span></td>
+        <td>
+          <strong>${escapeHtml(client.displayName || client.name || 'Remote Client')}</strong>
+          <div style="margin-top:6px;">
+            <button type="button" onclick="toggleRename('${escapeHtml(client.id)}')">Rename</button>
+          </div>
+          <form id="rename-${escapeHtml(client.id)}" method="post" action="/api/tv/clients/${encodeURIComponent(client.id)}/rename" style="display:none;gap:8px;align-items:center;margin-top:6px;max-width:360px;">
+            <div style="flex:1;">
+              <label>Display Name</label>
+              <input name="displayName" value="${escapeHtml(client.displayName || client.name || '')}" placeholder="Living Room TV">
+            </div>
+            <button type="submit">Save</button>
+            <button type="button" onclick="toggleRename('${escapeHtml(client.id)}')">Cancel</button>
+          </form>
+        </td>
         <td>${escapeHtml(client.createdAt || '')}</td>
         <td>${client.lastSeenAt ? escapeHtml(client.lastSeenAt) : '<span class="muted">Never</span>'}</td>
         <td style="white-space:nowrap;">
@@ -1503,13 +1528,13 @@ app.get('/tv-clients', (req, res) => {
 
   res.send(renderPage(`
     <div class="card">
-      <h2>TV Clients</h2>
-      <p class="muted">Authorize Android TV clients without giving them admin credentials. TV clients receive read-only access to the camera catalog API.</p>
+      <h2>Remote Clients</h2>
+      <p class="muted">Authorize remote clients without giving them admin credentials. Remote clients receive read-only access to the camera catalog API.</p>
     </div>
 
     <div class="card">
       <h2>Authorize Client by Pairing Code</h2>
-      <p class="muted">When the Android TV app starts, it will display a short pairing code. Enter that code here to authorize the client.</p>
+      <p class="muted">When a ScottiBYTE MultiView client starts for the first time, it displays a pairing code. Enter that code here to authorize the client.</p>
 
       <form method="post" action="/api/tv/pairing/authorize-code" style="display:flex;gap:10px;align-items:end;max-width:520px;">
         <div style="flex:1;">
@@ -1521,7 +1546,7 @@ app.get('/tv-clients', (req, res) => {
     </div>
 
     <div class="card">
-      <h2>Pending Clients</h2>
+      <h2>Pending Authorization</h2>
       <table>
         <thead>
           <tr>
@@ -1533,13 +1558,13 @@ app.get('/tv-clients', (req, res) => {
           </tr>
         </thead>
         <tbody>
-          ${pendingRows || '<tr><td colspan="5" class="muted">No pending TV clients.</td></tr>'}
+          ${pendingRows || '<tr><td colspan="5" class="muted">No pending remote clients.</td></tr>'}
         </tbody>
       </table>
     </div>
 
     <div class="card">
-      <h2>Approved / Waiting for Client</h2>
+      <h2>Approved - Waiting for First Connection</h2>
       <p class="muted">These clients have been approved by an admin but have not yet picked up their device token.</p>
       <table>
         <thead>
@@ -1569,7 +1594,7 @@ app.get('/tv-clients', (req, res) => {
           </tr>
         </thead>
         <tbody>
-          ${clientRows || '<tr><td colspan="4" class="muted">No authorized TV clients.</td></tr>'}
+          ${clientRows || '<tr><td colspan="4" class="muted">No authorized remote clients.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -1580,11 +1605,11 @@ app.post('/api/tv/pairing/request', (req, res) => {
   if (!hasAdminUser()) {
     return res.status(503).json({
       ok: false,
-      error: 'Server admin setup required before pairing TV clients'
+      error: 'Server admin setup required before pairing Remote clients'
     });
   }
 
-  const name = String(req.body.clientName || req.body.name || 'Android TV Client').trim().slice(0, 80) || 'Android TV Client';
+  const name = String(req.body.clientName || req.body.name || 'Remote Client').trim().slice(0, 80) || 'Remote Client';
   const pairingCode = generatePairingCode();
   const now = Date.now();
 
@@ -1644,7 +1669,7 @@ app.get('/api/tv/pairing/status', (req, res) => {
   const token = generateTvClientToken();
   const client = {
     id: generateTvClientId(),
-    name: request.name || 'Android TV Client',
+    name: request.name || 'Remote Client',
     tokenHash: hashPassword(token),
     createdAt: new Date().toISOString(),
     lastSeenAt: null,
@@ -1688,7 +1713,7 @@ app.post('/api/tv/pairing/authorize-code', (req, res) => {
       <div class="card">
         <h2>Pairing Code Not Found</h2>
         <p>The pairing code was not found, expired, or already used.</p>
-        <p><a href="/tv-clients" style="color:#93c5fd;">Return to TV Clients</a></p>
+        <p><a href="/tv-clients" style="color:#93c5fd;">Return to Remote Clients</a></p>
       </div>
     `));
   }
@@ -1715,6 +1740,30 @@ app.post('/api/tv/pairing/:id/deny', (req, res) => {
   if (request) {
     request.deniedAt = new Date().toISOString();
     savePairingRequests(requests);
+  }
+
+  res.redirect('/tv-clients');
+});
+
+
+app.post('/api/tv/pairing/:id/delete', (req, res) => {
+  const id = String(req.params.id || '');
+  const requests = loadPairingRequests();
+  const next = requests.filter(request => request.id !== id);
+  savePairingRequests(next);
+  res.redirect('/tv-clients');
+});
+
+app.post('/api/tv/clients/:id/rename', (req, res) => {
+  const id = String(req.params.id || '');
+  const displayName = String(req.body.displayName || '').trim().slice(0, 80);
+  const clients = loadTvClients();
+  const client = clients.find(client => client.id === id);
+
+  if (client) {
+    client.displayName = displayName || client.name || 'Remote Client';
+    client.updatedAt = new Date().toISOString();
+    saveTvClients(clients);
   }
 
   res.redirect('/tv-clients');
@@ -1925,7 +1974,7 @@ app.get('/groups', (req, res) => {
   res.send(renderPage(`
     <div class="card">
       <h2>Camera Groups</h2>
-      <p class="muted">Groups are admin metadata used to organize cameras. The Android TV client may use these for filtering, but user-created viewing layouts belong in the Android app.</p>
+      <p class="muted">Groups are admin metadata used to organize cameras. The Android Remote client may use these for filtering, but user-created viewing layouts belong in the Android app.</p>
 
       <form method="post" action="/api/groups" style="display:flex;gap:10px;align-items:end;max-width:560px;">
         <div style="flex:1;">
