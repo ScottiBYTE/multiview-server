@@ -1,36 +1,77 @@
 # ScottiBYTE MultiView Server
 
-Self-hosted camera gateway for the ScottiBYTE MultiView Android TV / Fire TV client.
+Self-hosted camera gateway for ScottiBYTE MultiView Android TV, Fire TV, phone, and tablet clients.
 
-ScottiBYTE MultiView Server lets you define RTSP camera sources in a web interface, organize cameras into groups, publish TV-friendly HLS streams through MediaMTX, and securely pair Android TV / Fire TV clients without exposing camera usernames or passwords to the TV device.
+ScottiBYTE MultiView Server lets you define RTSP camera sources in a web interface, organize cameras into groups, publish TV-friendly HLS streams through MediaMTX, and securely pair ScottiBYTE MultiView clients without exposing camera usernames or passwords to client devices.
 
 ![ScottiBYTE MultiView Server Cameras](screenshots/02-cameras.png)
 
 ## Why MultiView Server Exists
 
-Modern IP cameras commonly use high resolutions, high bitrates, and RTSP streams that are not always friendly to low-power TV devices. Trying to display many full-motion camera streams directly on a Fire TV or Android TV device can quickly overload the client.
+Modern IP cameras commonly use high resolutions, high bitrates, and RTSP streams that are not always friendly to low-power Android TV devices or mobile devices. Trying to display many full-motion camera streams directly from cameras also exposes camera credentials and places unnecessary load on client devices.
 
-ScottiBYTE MultiView uses a client/server design:
+ScottiBYTE MultiView uses a client/server architecture:
 
-- The server stores camera definitions and RTSP connection details.
-- The server publishes camera streams as HLS through MediaMTX.
-- The TV client pairs securely with the server.
-- The TV client receives a camera catalog and HLS playback URLs.
-- Camera credentials stay on the self-hosted server.
+- The server stores all camera definitions and RTSP credentials.
+- MediaMTX publishes secure HLS streams.
+- Android TV, Fire TV, phone, and tablet clients securely pair with the server.
+- Clients receive only the approved camera catalog and playback URLs.
+- Camera credentials always remain on the server.
 
 ## Features
 
 - Web-based camera configuration
 - RTSP camera input support
-- HLS stream publishing through MediaMTX
+- MediaMTX HLS stream publishing
 - Camera groups
-- Server-approved TV client pairing
-- Read-only TV client camera catalog API
+- Secure Remote Client pairing
+- Remote Client management
+- Rename authorized clients
+- Remove pending authorization requests
+- Read-only client camera catalog API
 - Dashboard with server and stream status
-- Stream engine status page
+- Stream Engine status
 - Automatic thumbnail refresh
-- Light and dark mode
+- Light and Dark themes
 - Docker-friendly deployment
+
+## Supported Clients
+
+### ScottiBYTE MultiView Android TV / Fire TV
+
+Designed for televisions and streaming devices.
+
+Features include:
+
+- Multiple simultaneous live cameras
+- Full-screen viewing
+- Remote-control navigation
+- Drag-and-drop camera ordering
+- Continuous monitoring
+
+Repository:
+
+https://github.com/ScottiBYTE/multiview-android-tv
+
+---
+
+### ScottiBYTE MultiView Mobile
+
+Designed for Android phones and tablets.
+
+Features include:
+
+- Touch-first interface
+- Camera thumbnails
+- Inline live preview
+- Full-screen player
+- Pinch-to-zoom
+- Swipe between cameras
+- Custom camera ordering
+
+Repository:
+
+https://github.com/ScottiBYTE/multiview-android-mobile
 
 ## Screenshots
 
@@ -50,96 +91,120 @@ ScottiBYTE MultiView uses a client/server design:
 
 ![Stream Engine](screenshots/04-stream-engine.png)
 
-### TV Clients
+### Remote Clients
 
-![TV Clients](screenshots/05-tv-clients.png)
+![Remote Clients](screenshots/05-tv-clients.png)
 
 ## Architecture
 
-    IP Cameras / RTSP
-            |
-            v
-    ScottiBYTE MultiView Server
-            |
-            | HLS streams through MediaMTX
-            v
-    Android TV / Fire TV MultiView Client
+```
+          RTSP Cameras
+                │
+                ▼
+     ScottiBYTE MultiView Server
+                │
+                │  HLS via MediaMTX
+                ▼
+ ┌─────────────────────────────────────┐
+ │ Android TV / Fire TV Client         │
+ │ Android Phone Client                │
+ │ Android Tablet Client               │
+ └─────────────────────────────────────┘
+```
 
-The TV client does not need camera usernames or passwords. It pairs with the server and receives only the approved camera catalog and playback URLs.
+Clients never receive camera usernames or passwords. They pair securely with the server and receive only the approved camera catalog and playback URLs.
 
 ## Quick Start
 
-Clone the repository for the Docker Compose file, MediaMTX configuration, and example environment file:
+Clone the repository:
 
-    git clone https://github.com/ScottiBYTE/multiview-server.git
-    cd multiview-server
+```bash
+git clone https://github.com/ScottiBYTE/multiview-server.git
+cd multiview-server
+```
 
-Create your local environment file:
+Create your local environment:
 
-    cp .env.example .env
-    nano .env
+```bash
+cp .env.example .env
+nano .env
+```
 
-Start the server stack:
+Start the server:
 
-    docker compose up -d
+```bash
+docker compose up -d
+```
 
-The default Compose file uses the published Docker Hub image:
+The default Compose file uses:
 
-    scottibyte/multiview-server:latest
+```text
+scottibyte/multiview-server:latest
+```
 
-Open the web UI:
+Open the web interface:
 
-    http://SERVER-IP:8080
+```
+http://SERVER-IP:8080
+```
 
-On first launch, create the administrator account, then use the web interface to add cameras, groups, and TV clients.
+Create the administrator account, then add cameras, groups, and authorize remote clients.
 
 ## Docker Image
 
-Pull the current image:
+Latest:
 
-    docker pull scottibyte/multiview-server:latest
+```bash
+docker pull scottibyte/multiview-server:latest
+```
 
 Specific version:
 
-    docker pull scottibyte/multiview-server:1.2.0
+```bash
+docker pull scottibyte/multiview-server:1.3.0
+```
 
-## Local Development Build
+## Local Development
 
-For local development, edit docker-compose.yml, comment the image line, and uncomment:
+For local development, edit `docker-compose.yml`, comment the Docker image line, and uncomment:
 
-    build: .
+```yaml
+build: .
+```
 
 Then rebuild:
 
-    docker compose build --no-cache multiview-server
-    docker compose up -d
+```bash
+docker compose build --no-cache multiview-server
+docker compose up -d
+```
 
 ## Example .env
 
-    TZ=America/Chicago
+```text
+TZ=America/Chicago
 
-    MULTIVIEW_PUBLIC_URL=http://SERVER-IP:8080
+MULTIVIEW_PUBLIC_URL=http://SERVER-IP:8080
 
-    MEDIAMTX_API_BASE=http://127.0.0.1:9997
-    MEDIAMTX_HLS_BASE=http://SERVER-IP:8888
+MEDIAMTX_API_BASE=http://127.0.0.1:9997
+MEDIAMTX_HLS_BASE=http://SERVER-IP:8888
+```
 
 ## Adding Cameras
 
-Cameras are added from the server web UI.
-
-Open the **Cameras** page and add each camera with:
+Add cameras from the **Cameras** page by specifying:
 
 - Camera name
 - Group
 - RTSP URL
-- Enabled / disabled status
-- Optional display and stream settings
+- Enabled/Disabled status
+- Optional display settings
 
-The server stores the camera configuration locally under its runtime data directory. Runtime data is intentionally excluded from Git so real camera URLs and credentials are not published.
+Camera configuration is stored locally under the runtime data directory and is intentionally excluded from Git.
 
 ## Camera Groups
 
-Use the **Groups** page to organize cameras into logical collections such as:
+Use groups to organize cameras such as:
 
 - Exterior
 - Interior
@@ -148,64 +213,75 @@ Use the **Groups** page to organize cameras into logical collections such as:
 - Front Door
 - Backyard
 
-Groups help organize the camera catalog presented to the Android TV / Fire TV client.
+Groups are presented consistently across all ScottiBYTE MultiView clients.
 
 ## Thumbnail Refresh
 
-Camera thumbnails are refreshed automatically by the server environment. The server uses the published HLS streams to capture still images for the camera list and TV client catalog.
+The server automatically refreshes camera thumbnails from published HLS streams.
 
-A helper script is included for environments that want to run or troubleshoot thumbnail refresh manually:
+A maintenance utility is also included:
 
-    scripts/refresh-thumbnails.sh
+```bash
+scripts/refresh-thumbnails.sh
+```
 
-Most users should not need to run this script directly. It is provided as a maintenance and troubleshooting utility.
+Optional overrides:
 
-If needed, it can be run manually:
+```bash
+MEDIAMTX_HLS_BASE=http://SERVER-IP:8888 ./scripts/refresh-thumbnails.sh
+```
 
-    ./scripts/refresh-thumbnails.sh
+## Remote Client Pairing
 
-Optional environment overrides:
-
-    MEDIAMTX_HLS_BASE=http://SERVER-IP:8888 ./scripts/refresh-thumbnails.sh
-    MULTIVIEW_THUMB_DIR=/custom/thumb/path ./scripts/refresh-thumbnails.sh
-
-## TV Client Pairing
-
-1. Install the ScottiBYTE MultiView TV client on Android TV or Fire TV.
+1. Install the ScottiBYTE MultiView client.
 2. Enter the MultiView Server URL.
-3. The TV client displays a pairing code.
-4. Open the MultiView Server web UI.
-5. Go to **TV Clients**.
-6. Approve the pending pairing request.
-7. The TV client receives its authorization and loads the camera catalog.
+3. The client displays a pairing code.
+4. Open **Remote Clients** in the server web interface.
+5. Enter or approve the pairing code.
+6. Optionally rename the client.
+7. The client automatically downloads the camera catalog.
 
-TV clients receive read-only access to the camera catalog API. They do not receive admin credentials or raw camera passwords.
+Authorized clients receive only read-only access to the camera catalog and playback URLs.
 
 ## Reverse Proxy
 
-The server can be placed behind a reverse proxy such as Nginx Proxy Manager, Caddy, Traefik, or another HTTPS proxy.
+The server works behind Nginx Proxy Manager, Caddy, Traefik, or another HTTPS reverse proxy.
 
-Example public or internal URL:
+Example:
 
-    https://multiview-server.example.com
+```text
+https://multiview.example.com
+```
 
-Use that URL as `MULTIVIEW_PUBLIC_URL` and as the server URL entered in the TV client.
+Use this URL for both:
+
+- `MULTIVIEW_PUBLIC_URL`
+- Client connection settings
 
 ## Security Model
 
-ScottiBYTE MultiView is designed so camera credentials remain on the self-hosted server.
+Camera credentials never leave the server.
 
-- RTSP camera usernames and passwords are entered and stored on the server.
-- Android TV / Fire TV clients do not receive raw RTSP URLs or camera passwords.
-- TV clients must be paired and approved from the server web UI.
-- Approved TV clients receive read-only access to the camera catalog and HLS playback URLs.
-- Client access can be revoked from the **TV Clients** page.
+Remote clients receive:
 
-For best results, keep camera RTSP streams and MediaMTX HLS endpoints on a trusted private network or behind your own reverse proxy.
+- Read-only camera catalog
+- HLS playback URLs
+- Device-specific authorization tokens
 
-## Related Project
+Administrators can:
 
-- ScottiBYTE MultiView Android TV / Fire TV Client: https://github.com/ScottiBYTE/multiview-android-tv
+- Authorize new clients
+- Rename authorized clients
+- Remove pending authorization requests
+- Revoke any authorized client
+
+## Related Projects
+
+- ScottiBYTE MultiView Android TV / Fire TV Client  
+  https://github.com/ScottiBYTE/multiview-android-tv
+
+- ScottiBYTE MultiView Mobile  
+  https://github.com/ScottiBYTE/multiview-android-mobile
 
 ## License
 
@@ -213,10 +289,8 @@ MIT License
 
 ## 🌐 Community
 
-### Community Support
-
-Need help with ScottiBYTE MultiView Server, the Android TV / Fire TV client, Docker deployment, MediaMTX, camera configuration, TV client pairing, or other ScottiBYTE utilities?
+Need help with MultiView Server, Android TV, Android Mobile, Docker deployment, MediaMTX, or camera configuration?
 
 Join the ScottiBYTE Rocket.Chat community:
 
-[Join ScottiBYTE Rocket.Chat](https://go.rocket.chat/invite?host=chat.scottibyte.com&path=invite%2FaCh2oW)
+https://go.rocket.chat/invite?host=chat.scottibyte.com&path=invite%2FaCh2oW
